@@ -1,0 +1,5 @@
+# Minimal stock Tor configuration
+# Restored by opsec-mode off
+
+SocksPort 9050
+Log notice file /var/log/tor/notices.log

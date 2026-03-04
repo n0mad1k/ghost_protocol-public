@@ -1,0 +1,3 @@
+# OPSEC Mode DNS — all resolution through Tor DNSPort
+# Deployed by opsec-mode on, locked with chattr +i
+nameserver 127.0.0.1

@@ -1,0 +1,15 @@
+# /etc/udev/rules.d/99-opsec-usb.rules — OPSEC USB Device Monitoring
+# Logs all USB insertions and sends desktop notification
+# Optionally blocks new devices when LEAK_USB_BLOCK=1 in /etc/opsec/opsec.conf
+
+# Log all USB device insertions
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", \
+    RUN+="/bin/bash -c 'echo \"[$(date +%%Y-%%m-%%d\\ %%H:%%M:%%S)] USB INSERT: vendor=$attr{idVendor} product=$attr{idProduct} serial=$attr{serial}\" >> /var/log/opsec-usb.log'"
+
+# Desktop notification on USB insertion
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", \
+    RUN+="/bin/bash -c 'REAL_USER=$(who | head -1 | awk \"{print \\$1}\"); [ -n \"$REAL_USER\" ] && su - $REAL_USER -c \"DISPLAY=:0 notify-send -u critical OPSEC\\ USB \\\"USB device inserted: $attr{idVendor}:$attr{idProduct}\\\"\" 2>/dev/null || true'"
+
+# Log USB mass storage specifically (higher risk)
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_USB_DRIVER}=="usb-storage", \
+    RUN+="/bin/bash -c 'echo \"[$(date +%%Y-%%m-%%d\\ %%H:%%M:%%S)] USB STORAGE: $env{ID_VENDOR} $env{ID_MODEL} $env{ID_SERIAL}\" >> /var/log/opsec-usb.log'"

@@ -1,0 +1,3 @@
+# /etc/cron.d/opsec-banner-cache — Update WAN IP cache for terminal banner
+# Runs every 5 minutes to keep the cached external IP current
+*/5 * * * * root /usr/local/bin/opsec-banner-cache.sh >/dev/null 2>&1

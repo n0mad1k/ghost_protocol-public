@@ -1,0 +1,11 @@
+---
+# Vault deployment — Coming soon
+# This is a stub playbook. Full implementation planned.
+
+- name: Deploy Vault Server
+  hosts: all
+  become: true
+  tasks:
+    - name: Placeholder
+      debug:
+        msg: "Vault playbook not yet implemented. Check phantom/README.md for status."

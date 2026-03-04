@@ -1,0 +1,144 @@
+---
+# Base server hardening — applied to all deployments
+# Covers: updates, firewall, fail2ban, SSH hardening
+
+- name: Base Server Hardening
+  hosts: all
+  become: true
+  vars:
+    ssh_port: "{{ ssh_port | default(22) }}"
+    ssh_allow_password: false
+
+  tasks:
+    # ─── System Updates ─────────────────────────────────────────────────
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Upgrade all packages
+      apt:
+        upgrade: safe
+      when: ansible_os_family == "Debian"
+
+    - name: Install essential packages
+      apt:
+        name:
+          - ufw
+          - fail2ban
+          - unattended-upgrades
+          - apt-listchanges
+          - curl
+          - wget
+          - gnupg
+          - ca-certificates
+          - software-properties-common
+        state: present
+      when: ansible_os_family == "Debian"
+
+    # ─── UFW Firewall ───────────────────────────────────────────────────
+    - name: Set UFW default deny incoming
+      ufw:
+        direction: incoming
+        policy: deny
+
+    - name: Set UFW default allow outgoing
+      ufw:
+        direction: outgoing
+        policy: allow
+
+    - name: Allow SSH through UFW
+      ufw:
+        rule: allow
+        port: "{{ ssh_port }}"
+        proto: tcp
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+
+    # ─── Fail2ban ───────────────────────────────────────────────────────
+    - name: Configure fail2ban SSH jail
+      copy:
+        dest: /etc/fail2ban/jail.local
+        content: |
+          [sshd]
+          enabled = true
+          port = {{ ssh_port }}
+          filter = sshd
+          logpath = /var/log/auth.log
+          maxretry = 5
+          bantime = 3600
+          findtime = 600
+        mode: "0644"
+      notify: restart fail2ban
+
+    - name: Enable fail2ban
+      service:
+        name: fail2ban
+        state: started
+        enabled: true
+
+    # ─── SSH Hardening ──────────────────────────────────────────────────
+    - name: Disable SSH password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PasswordAuthentication"
+        line: "PasswordAuthentication no"
+      when: not ssh_allow_password
+      notify: restart sshd
+
+    - name: Disable SSH root login with password
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PermitRootLogin"
+        line: "PermitRootLogin prohibit-password"
+      notify: restart sshd
+
+    - name: Disable SSH X11 forwarding
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?X11Forwarding"
+        line: "X11Forwarding no"
+      notify: restart sshd
+
+    # ─── Automatic Security Updates ─────────────────────────────────────
+    - name: Enable unattended upgrades for security
+      copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+          APT::Periodic::AutocleanInterval "7";
+        mode: "0644"
+      when: ansible_os_family == "Debian"
+
+    # ─── Kernel Hardening ───────────────────────────────────────────────
+    - name: Apply sysctl hardening
+      sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_set: true
+        reload: true
+      loop:
+        - { key: "net.ipv4.conf.all.rp_filter", value: "1" }
+        - { key: "net.ipv4.conf.default.rp_filter", value: "1" }
+        - { key: "net.ipv4.icmp_echo_ignore_broadcasts", value: "1" }
+        - { key: "net.ipv4.conf.all.accept_redirects", value: "0" }
+        - { key: "net.ipv4.conf.default.accept_redirects", value: "0" }
+        - { key: "net.ipv6.conf.all.accept_redirects", value: "0" }
+        - { key: "net.ipv6.conf.default.accept_redirects", value: "0" }
+        - { key: "net.ipv4.conf.all.send_redirects", value: "0" }
+        - { key: "net.ipv4.conf.default.send_redirects", value: "0" }
+
+  handlers:
+    - name: restart fail2ban
+      service:
+        name: fail2ban
+        state: restarted
+
+    - name: restart sshd
+      service:
+        name: sshd
+        state: restarted

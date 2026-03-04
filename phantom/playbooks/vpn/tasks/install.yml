@@ -1,0 +1,54 @@
+---
+# WireGuard installation and server key generation
+
+- name: Install WireGuard
+  apt:
+    name:
+      - wireguard
+      - wireguard-tools
+      - qrencode
+    state: present
+  when: ansible_os_family == "Debian"
+
+- name: Enable IP forwarding (IPv4)
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_set: true
+    reload: true
+
+- name: Enable IP forwarding (IPv6)
+  sysctl:
+    name: net.ipv6.conf.all.forwarding
+    value: "1"
+    sysctl_set: true
+    reload: true
+
+- name: Generate server private key
+  shell: wg genkey
+  register: wg_server_privkey
+  args:
+    creates: /etc/wireguard/server_private.key
+
+- name: Save server private key
+  copy:
+    content: "{{ wg_server_privkey.stdout }}"
+    dest: /etc/wireguard/server_private.key
+    mode: "0600"
+  when: wg_server_privkey.changed
+
+- name: Read server private key
+  slurp:
+    src: /etc/wireguard/server_private.key
+  register: server_privkey_content
+
+- name: Generate server public key
+  shell: "echo '{{ server_privkey_content.content | b64decode | trim }}' | wg pubkey"
+  register: wg_server_pubkey
+  changed_when: false
+
+- name: Allow WireGuard port through UFW
+  ufw:
+    rule: allow
+    port: "{{ wg_port }}"
+    proto: udp

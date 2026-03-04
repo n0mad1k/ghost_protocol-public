@@ -1,0 +1,30 @@
+---
+# Register a pre-provisioned FlokiNET server for phantom deployment
+# FlokiNET servers are provisioned manually via their control panel.
+# This playbook only validates SSH connectivity and prepares the server.
+
+- name: Register FlokiNET Server
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Ensure Python is available for Ansible
+      raw: test -e /usr/bin/python3 || (apt-get update && apt-get install -y python3)
+      changed_when: false
+
+    - name: Gather facts now that Python is available
+      setup:
+
+    - name: Verify SSH connectivity
+      ping:
+
+    - name: Display server info
+      debug:
+        msg: |
+          FlokiNET server registered:
+            Hostname: {{ ansible_hostname }}
+            OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+            IP: {{ ansible_default_ipv4.address | default(target_host) }}
+            RAM: {{ ansible_memtotal_mb }}MB
+            Cores: {{ ansible_processor_vcpus }}

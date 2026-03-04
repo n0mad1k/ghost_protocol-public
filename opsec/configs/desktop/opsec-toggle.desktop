@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OPSEC Mode Toggle
+Comment=Toggle between OPSEC Advanced and Standard modes
+Exec=/usr/local/bin/opsec-toggle.sh
+Icon=security-high
+Terminal=false
+Categories=System;Security;
+Keywords=opsec;security;toggle;mode;

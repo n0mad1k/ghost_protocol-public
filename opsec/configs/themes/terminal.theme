@@ -1,0 +1,14 @@
+# Terminal theme — classic monochrome green CRT aesthetic
+# Deployed to /etc/opsec/themes/ — sourced by opsec_generate_conky()
+THEME_LABEL="Terminal"
+CONKY_BG="0A0A0A"
+CONKY_COLOR0="FF3333"
+CONKY_COLOR1="33FF33"
+CONKY_COLOR2="22BB22"
+CONKY_COLOR3="0A0A0A"
+CONKY_COLOR4="118811"
+CONKY_COLOR5="44FF44"
+CONKY_COLOR6="33DD33"
+CONKY_COLOR7="AAFFAA"
+CONKY_COLOR8="22CC22"
+CONKY_COLOR9="1A3A1A"

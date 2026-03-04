@@ -1,0 +1,88 @@
+---
+# WireGuard server and client configuration
+
+- name: Detect primary network interface
+  shell: ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}'
+  register: primary_interface
+  changed_when: false
+
+- name: Generate client keys
+  shell: |
+    mkdir -p /etc/wireguard/clients
+    for i in $(seq 1 {{ wg_clients }}); do
+      if [ ! -f /etc/wireguard/clients/client${i}_private.key ]; then
+        wg genkey | tee /etc/wireguard/clients/client${i}_private.key | wg pubkey > /etc/wireguard/clients/client${i}_public.key
+        wg genpsk > /etc/wireguard/clients/client${i}_psk.key
+        chmod 600 /etc/wireguard/clients/client${i}_*.key
+      fi
+    done
+  args:
+    creates: /etc/wireguard/clients/client1_private.key
+
+- name: Build WireGuard server config
+  shell: |
+    SERVER_PRIVKEY=$(cat /etc/wireguard/server_private.key)
+    IFACE={{ primary_interface.stdout | trim }}
+
+    cat > /etc/wireguard/wg0.conf << EOF
+    [Interface]
+    Address = {{ wg_subnet | regex_replace('/\\d+$', '') | regex_replace('\\.[0-9]+$', '.1/24') }}
+    ListenPort = {{ wg_port }}
+    PrivateKey = ${SERVER_PRIVKEY}
+    PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ${IFACE} -j MASQUERADE
+    PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ${IFACE} -j MASQUERADE
+
+    EOF
+
+    for i in $(seq 1 {{ wg_clients }}); do
+      CLIENT_PUBKEY=$(cat /etc/wireguard/clients/client${i}_public.key)
+      CLIENT_PSK=$(cat /etc/wireguard/clients/client${i}_psk.key)
+      cat >> /etc/wireguard/wg0.conf << EOF
+    [Peer]
+    # Client ${i}
+    PublicKey = ${CLIENT_PUBKEY}
+    PresharedKey = ${CLIENT_PSK}
+    AllowedIPs = {{ wg_subnet | regex_replace('/\\d+$', '') | regex_replace('\\.[0-9]+$', '') }}.$(( i + 1 ))/32
+
+    EOF
+    done
+
+    chmod 600 /etc/wireguard/wg0.conf
+  args:
+    creates: /etc/wireguard/wg0.conf
+
+- name: Generate client config files
+  shell: |
+    SERVER_PUBKEY=$(echo '{{ server_privkey_content.content | b64decode | trim }}' | wg pubkey)
+    SERVER_ENDPOINT="{{ target_host }}:{{ wg_port }}"
+
+    for i in $(seq 1 {{ wg_clients }}); do
+      CLIENT_PRIVKEY=$(cat /etc/wireguard/clients/client${i}_private.key)
+      CLIENT_PSK=$(cat /etc/wireguard/clients/client${i}_psk.key)
+      CLIENT_IP="{{ wg_subnet | regex_replace('/\\d+$', '') | regex_replace('\\.[0-9]+$', '') }}.$(( i + 1 ))"
+
+      cat > /etc/wireguard/clients/client${i}.conf << EOF
+    [Interface]
+    PrivateKey = ${CLIENT_PRIVKEY}
+    Address = ${CLIENT_IP}/32
+    DNS = {{ wg_dns }}
+
+    [Peer]
+    PublicKey = ${SERVER_PUBKEY}
+    PresharedKey = ${CLIENT_PSK}
+    Endpoint = ${SERVER_ENDPOINT}
+    AllowedIPs = {{ wg_allowed_ips }}
+    PersistentKeepalive = 25
+    EOF
+
+      # Generate QR code
+      qrencode -t ansiutf8 < /etc/wireguard/clients/client${i}.conf > /etc/wireguard/clients/client${i}_qr.txt 2>/dev/null || true
+    done
+  args:
+    creates: /etc/wireguard/clients/client1.conf
+
+- name: Enable and start WireGuard
+  systemd:
+    name: wg-quick@wg0
+    state: started
+    enabled: true

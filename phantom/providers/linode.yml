@@ -1,0 +1,66 @@
+---
+# Provision a Linode instance for phantom deployment
+# Requires: LINODE_API_TOKEN or api_token variable
+
+- name: Provision Linode Instance
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    linode_token: "{{ api_token }}"
+    linode_region: "{{ region | default('us-east') }}"
+    linode_plan: "{{ plan | default('g6-nanode-1') }}"
+    linode_image: "{{ image | default('linode/debian12') }}"
+    linode_label: "phantom-{{ deploy_id }}"
+    ssh_key_path: "{{ ssh_key }}.pub"
+
+  tasks:
+    - name: Read SSH public key
+      slurp:
+        src: "{{ ssh_key_path }}"
+      register: ssh_pubkey
+
+    - name: Create Linode instance
+      uri:
+        url: https://api.linode.com/v4/linode/instances
+        method: POST
+        headers:
+          Authorization: "Bearer {{ linode_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          type: "{{ linode_plan }}"
+          region: "{{ linode_region }}"
+          image: "{{ linode_image }}"
+          label: "{{ linode_label }}"
+          authorized_keys:
+            - "{{ ssh_pubkey.content | b64decode | trim }}"
+          booted: true
+        status_code: 200
+      register: linode_result
+
+    - name: Set target host fact
+      set_fact:
+        target_host: "{{ linode_result.json.ipv4[0] }}"
+
+    - name: Display instance info
+      debug:
+        msg: |
+          Linode provisioned:
+            ID: {{ linode_result.json.id }}
+            IP: {{ linode_result.json.ipv4[0] }}
+            Region: {{ linode_region }}
+            Plan: {{ linode_plan }}
+
+    - name: Write provisioned host IP for phantom
+      copy:
+        content: "{{ target_host }}"
+        dest: "{{ _host_output_file }}"
+      when: _host_output_file is defined
+
+    - name: Wait for SSH
+      wait_for:
+        host: "{{ target_host }}"
+        port: 22
+        delay: 10
+        timeout: 300

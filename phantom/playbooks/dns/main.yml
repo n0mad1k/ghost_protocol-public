@@ -1,0 +1,18 @@
+---
+# Pi-hole DNS server deployment (Docker-based)
+
+- name: Deploy Pi-hole DNS Server
+  hosts: all
+  become: true
+  vars:
+    pihole_upstream: "{{ dns_upstream | default('9.9.9.9;149.112.112.112') }}"
+    pihole_domain: "{{ dns_domain | default('') }}"
+    pihole_blocklist: "{{ dns_blocklist | default('standard') }}"
+    target_host: "{{ target_host | default('localhost') }}"
+
+  tasks:
+    - name: Include Pi-hole installation
+      include_tasks: tasks/install.yml
+
+    - name: Include Pi-hole configuration
+      include_tasks: tasks/configure.yml

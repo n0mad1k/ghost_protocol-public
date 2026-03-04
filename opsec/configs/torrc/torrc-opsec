@@ -1,0 +1,32 @@
+# Hardened Tor Configuration for OPSEC Mode
+# Deployed by opsec-mode on — restored to torrc-default on off
+
+# ─── SOCKS & DNS ────────────────────────────────────────────────────────────
+SocksPort 9050 IsolateDestAddr IsolateDestPort
+DNSPort 5353
+
+# ─── FIVE EYES EXCLUSION ────────────────────────────────────────────────────
+# Never use exit nodes in Five Eyes countries
+ExcludeExitNodes {us},{gb},{ca},{au},{nz}
+StrictNodes 1
+
+# ─── CIRCUIT ROTATION ───────────────────────────────────────────────────────
+# Rotate circuits every 30 seconds for maximum anonymity
+MaxCircuitDirtiness 30
+
+# ─── STREAM ISOLATION ───────────────────────────────────────────────────────
+# Each destination gets its own circuit
+IsolateSOCKSAuth 1
+
+# ─── TRAFFIC PADDING ────────────────────────────────────────────────────────
+# Pad cells to resist traffic analysis
+ConnectionPadding 1
+
+# ─── SAFE LOGGING ────────────────────────────────────────────────────────────
+# Scrub sensitive info from logs
+SafeLogging 1
+Log notice file /var/log/tor/notices.log
+
+# ─── PERFORMANCE ─────────────────────────────────────────────────────────────
+NumEntryGuards 3
+UseEntryGuards 1

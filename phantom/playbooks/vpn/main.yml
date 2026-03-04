@@ -1,0 +1,20 @@
+---
+# WireGuard VPN server deployment
+
+- name: Deploy WireGuard VPN Server
+  hosts: all
+  become: true
+  vars:
+    wg_port: "{{ vpn_port | default(51820) }}"
+    wg_clients: "{{ vpn_client_count | default(3) }}"
+    wg_dns: "{{ vpn_dns | default('1.1.1.1') }}"
+    wg_subnet: "{{ vpn_subnet | default('10.66.66.0/24') }}"
+    wg_allowed_ips: "{{ vpn_allowed_ips | default('0.0.0.0/0, ::/0') }}"
+    target_host: "{{ target_host | default('localhost') }}"
+
+  tasks:
+    - name: Include WireGuard installation tasks
+      include_tasks: tasks/install.yml
+
+    - name: Include WireGuard configuration tasks
+      include_tasks: tasks/configure.yml

@@ -1,0 +1,15 @@
+[Unit]
+Description=OPSEC Kill Switch (block non-Tor/VPN traffic)
+Before=NetworkManager.service
+Before=networking.service
+After=local-fs.target
+ConditionPathExists=/var/run/opsec-advanced.enabled
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/opsec-killswitch.sh on
+ExecStop=/usr/local/bin/opsec-killswitch.sh off
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

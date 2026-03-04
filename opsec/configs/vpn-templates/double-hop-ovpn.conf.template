@@ -1,0 +1,69 @@
+# Double-Hop OpenVPN Configuration Template
+# Chain two VPN servers for additional anonymity layer
+# Replace %%VARIABLES%% with actual values before use
+#
+# Usage: Copy and fill in variables, then:
+#   sudo openvpn --config double-hop.ovpn
+
+# ─── First Hop (Entry Server) ─────────────────────────────────────────────────
+# This is the server your ISP sees you connecting to
+
+client
+dev tun
+proto %%PROTO_1%%
+remote %%SERVER_1%% %%PORT_1%%
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+
+# Authentication
+auth-user-pass %%AUTH_FILE_1%%
+ca %%CA_FILE_1%%
+
+# Security
+cipher AES-256-GCM
+auth SHA512
+tls-cipher TLS-ECDHE-RSA-WITH-AES-256-GCM-SHA384
+tls-version-min 1.2
+remote-cert-tls server
+
+# Routing — send all traffic through VPN
+redirect-gateway def1
+dhcp-option DNS 10.8.0.1
+
+# Keepalive
+keepalive 10 60
+ping-timer-rem
+
+# Logging
+verb 3
+mute 10
+
+# ─── Second Hop Configuration ─────────────────────────────────────────────────
+# After first VPN is established, launch second hop:
+#
+#   sudo openvpn --config hop2.ovpn --route-nopull \
+#       --route %%SERVER_2%% 255.255.255.255 net_gateway
+#
+# Where hop2.ovpn contains:
+#   client
+#   dev tun1
+#   proto %%PROTO_2%%
+#   remote %%SERVER_2%% %%PORT_2%%
+#   auth-user-pass %%AUTH_FILE_2%%
+#   ca %%CA_FILE_2%%
+#   cipher AES-256-GCM
+#   redirect-gateway def1
+
+# ─── Variables Reference ───────────────────────────────────────────────────────
+# %%SERVER_1%%    — First hop IP/hostname
+# %%PORT_1%%      — First hop port (e.g. 1194, 443)
+# %%PROTO_1%%     — First hop protocol (udp/tcp)
+# %%AUTH_FILE_1%% — First hop credentials file
+# %%CA_FILE_1%%   — First hop CA certificate
+# %%SERVER_2%%    — Second hop IP/hostname
+# %%PORT_2%%      — Second hop port
+# %%PROTO_2%%     — Second hop protocol
+# %%AUTH_FILE_2%% — Second hop credentials file
+# %%CA_FILE_2%%   — Second hop CA certificate

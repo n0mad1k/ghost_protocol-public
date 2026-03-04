@@ -1,0 +1,99 @@
+---
+# Synapse homeserver installation and configuration
+
+- name: Install dependencies
+  apt:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+      - libpq-dev
+      - postgresql
+      - postgresql-contrib
+      - nginx
+      - certbot
+      - python3-certbot-nginx
+    state: present
+
+- name: Add Matrix Synapse apt repository key
+  apt_key:
+    url: https://packages.matrix.org/debian/matrix-org-archive-keyring.gpg
+    state: present
+
+- name: Add Matrix Synapse apt repository
+  apt_repository:
+    repo: "deb https://packages.matrix.org/debian/ {{ ansible_distribution_release }} main"
+    state: present
+    filename: matrix-org
+
+- name: Install Synapse
+  apt:
+    name: matrix-synapse-py3
+    state: present
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Create PostgreSQL database
+  become_user: postgres
+  postgresql_db:
+    name: synapse
+    encoding: UTF-8
+    lc_collate: C
+    lc_ctype: C
+    template: template0
+
+- name: Create PostgreSQL user
+  become_user: postgres
+  postgresql_user:
+    name: synapse
+    password: "{{ matrix_signing_key[:32] }}"
+    db: synapse
+    priv: ALL
+
+- name: Deploy Synapse homeserver config
+  template:
+    src: ../templates/homeserver.yaml.j2
+    dest: /etc/matrix-synapse/homeserver.yaml
+    owner: matrix-synapse
+    group: matrix-synapse
+    mode: "0640"
+  notify: restart synapse
+
+- name: Allow Matrix federation port through UFW
+  ufw:
+    rule: allow
+    port: "8448"
+    proto: tcp
+
+- name: Allow HTTP/HTTPS through UFW
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - "80"
+    - "443"
+
+- name: Enable and start Synapse
+  service:
+    name: matrix-synapse
+    state: started
+    enabled: true
+
+- name: Wait for Synapse to be ready
+  wait_for:
+    port: 8008
+    host: 127.0.0.1
+    timeout: 30
+
+- name: Create admin user
+  command: >
+    register_new_matrix_user
+    -u {{ matrix_admin }}
+    -p {{ matrix_admin_pass }}
+    -a
+    -c /etc/matrix-synapse/homeserver.yaml
+    http://localhost:8008
+  register: admin_create
+  failed_when: false
+  changed_when: admin_create.rc == 0

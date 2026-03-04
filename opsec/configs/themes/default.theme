@@ -1,0 +1,14 @@
+# Default theme — balanced green-on-black aesthetic
+# Deployed to /etc/opsec/themes/ — sourced by opsec_generate_conky()
+THEME_LABEL="Default"
+CONKY_BG="000000"
+CONKY_COLOR0="FF4C4C"
+CONKY_COLOR1="00FF9C"
+CONKY_COLOR2="49D6B6"
+CONKY_COLOR3="000000"
+CONKY_COLOR4="49D6B6"
+CONKY_COLOR5="2AFFC6"
+CONKY_COLOR6="2AFFC6"
+CONKY_COLOR7="CFFFE6"
+CONKY_COLOR8="49D6B6"
+CONKY_COLOR9="1A1A1A"

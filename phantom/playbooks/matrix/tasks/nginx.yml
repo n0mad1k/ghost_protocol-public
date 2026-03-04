@@ -1,0 +1,115 @@
+---
+# Nginx reverse proxy for Matrix + Element
+# Two-phase: HTTP-only first for certbot, then full SSL config
+
+- name: Create certbot webroot
+  file:
+    path: /var/www/certbot
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+
+- name: Deploy HTTP-only nginx config (for certbot)
+  copy:
+    dest: /etc/nginx/sites-available/matrix
+    content: |
+      server {
+          listen 80;
+          server_name {{ matrix_domain }};
+
+          location /.well-known/acme-challenge/ {
+              root /var/www/certbot;
+          }
+
+          location / {
+              return 200 'phantom setup in progress';
+              add_header Content-Type text/plain;
+          }
+      }
+    mode: "0644"
+  notify: reload nginx
+
+- name: Enable Matrix nginx site
+  file:
+    src: /etc/nginx/sites-available/matrix
+    dest: /etc/nginx/sites-enabled/matrix
+    state: link
+  notify: reload nginx
+
+- name: Flush handlers to apply HTTP config
+  meta: flush_handlers
+
+- name: Obtain TLS certificate
+  command: >
+    certbot certonly --webroot -w /var/www/certbot
+    -d {{ matrix_domain }}
+    --non-interactive
+    --agree-tos
+    {% if certbot_email is defined and certbot_email %}
+    --email {{ certbot_email }}
+    {% else %}
+    --register-unsafely-without-email
+    {% endif %}
+  args:
+    creates: "/etc/letsencrypt/live/{{ matrix_domain }}/fullchain.pem"
+
+- name: Deploy full SSL nginx config
+  copy:
+    dest: /etc/nginx/sites-available/matrix
+    content: |
+      server {
+          listen 80;
+          server_name {{ matrix_domain }};
+
+          location /.well-known/acme-challenge/ {
+              root /var/www/certbot;
+          }
+
+          location / {
+              return 301 https://$host$request_uri;
+          }
+      }
+
+      server {
+          listen 443 ssl http2;
+          listen 8448 ssl http2;
+          server_name {{ matrix_domain }};
+
+          ssl_certificate /etc/letsencrypt/live/{{ matrix_domain }}/fullchain.pem;
+          ssl_certificate_key /etc/letsencrypt/live/{{ matrix_domain }}/privkey.pem;
+
+          ssl_protocols TLSv1.2 TLSv1.3;
+          ssl_ciphers HIGH:!aNULL:!MD5;
+          ssl_prefer_server_ciphers on;
+
+          client_max_body_size 50m;
+
+          # Synapse
+          location ~* ^(\/_matrix|\/_synapse\/client) {
+              proxy_pass http://127.0.0.1:8008;
+              proxy_set_header X-Forwarded-For $remote_addr;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header Host $host;
+          }
+
+          # .well-known delegation
+          location /.well-known/matrix/server {
+              return 200 '{"m.server": "{{ matrix_domain }}:443"}';
+              add_header Content-Type application/json;
+          }
+
+          location /.well-known/matrix/client {
+              return 200 '{"m.homeserver": {"base_url": "https://{{ matrix_domain }}"}}';
+              add_header Content-Type application/json;
+              add_header Access-Control-Allow-Origin *;
+          }
+
+          # Element Web (if enabled)
+          location / {
+              root /var/www/element;
+              try_files $uri $uri/ /index.html;
+          }
+      }
+    mode: "0644"
+  notify: reload nginx

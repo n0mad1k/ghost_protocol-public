@@ -1,0 +1,72 @@
+# WireGuard Multi-Hop Configuration Template
+# Chain WireGuard tunnels for additional anonymity
+# Replace %%VARIABLES%% with actual values
+#
+# Architecture:
+#   You → wg0 (Hop 1) → wg1 (Hop 2) → Internet
+#
+# Usage:
+#   sudo cp this-file /etc/wireguard/wg0.conf  (fill in variables)
+#   sudo wg-quick up wg0
+#   sudo wg-quick up wg1
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HOP 1: /etc/wireguard/wg0.conf — Entry tunnel (your ISP sees this)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[Interface]
+PrivateKey = %%PRIVATE_KEY_1%%
+Address = %%TUNNEL_IP_1%%/32
+DNS = %%DNS_1%%
+# MTU adjustment for encapsulation overhead
+MTU = 1380
+
+# Post-routing to allow hop 2 through hop 1
+PostUp = ip rule add from %%TUNNEL_IP_2%% table 200; ip route add default via %%GATEWAY_1%% table 200
+PostDown = ip rule del from %%TUNNEL_IP_2%% table 200; ip route del default via %%GATEWAY_1%% table 200
+
+[Peer]
+PublicKey = %%PUBLIC_KEY_1%%
+PresharedKey = %%PSK_1%%
+Endpoint = %%ENDPOINT_1%%:%%PORT_1%%
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HOP 2: /etc/wireguard/wg1.conf — Exit tunnel (internet sees this)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# [Interface]
+# PrivateKey = %%PRIVATE_KEY_2%%
+# Address = %%TUNNEL_IP_2%%/32
+# DNS = %%DNS_2%%
+# MTU = 1340
+# # Route this tunnel's traffic through wg0
+# Table = off
+# PostUp = ip rule add from %%TUNNEL_IP_2%% table 200
+# PostDown = ip rule del from %%TUNNEL_IP_2%% table 200
+#
+# [Peer]
+# PublicKey = %%PUBLIC_KEY_2%%
+# PresharedKey = %%PSK_2%%
+# Endpoint = %%ENDPOINT_2%%:%%PORT_2%%
+# AllowedIPs = 0.0.0.0/0, ::/0
+# PersistentKeepalive = 25
+
+# ─── Variables Reference ───────────────────────────────────────────────────────
+# %%PRIVATE_KEY_1%%  — Your private key for hop 1 (wg genkey)
+# %%PUBLIC_KEY_1%%   — Hop 1 server's public key
+# %%PSK_1%%          — Preshared key for hop 1 (wg genpsk)
+# %%ENDPOINT_1%%     — Hop 1 server IP/hostname
+# %%PORT_1%%         — Hop 1 server port (default: 51820)
+# %%TUNNEL_IP_1%%    — Your assigned tunnel IP on hop 1
+# %%GATEWAY_1%%      — Hop 1 internal gateway IP
+# %%DNS_1%%          — DNS server for hop 1
+#
+# %%PRIVATE_KEY_2%%  — Your private key for hop 2
+# %%PUBLIC_KEY_2%%   — Hop 2 server's public key
+# %%PSK_2%%          — Preshared key for hop 2
+# %%ENDPOINT_2%%     — Hop 2 server IP/hostname (reachable via hop 1)
+# %%PORT_2%%         — Hop 2 server port
+# %%TUNNEL_IP_2%%    — Your assigned tunnel IP on hop 2
+# %%DNS_2%%          — DNS server for hop 2

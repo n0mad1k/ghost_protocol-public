@@ -1,0 +1,14 @@
+# Slate theme — muted neutral tones with gold accent
+# Deployed to /etc/opsec/themes/ — sourced by opsec_generate_conky()
+THEME_LABEL="Slate"
+CONKY_BG="000000"
+CONKY_COLOR0="C63636"
+CONKY_COLOR1="9A9A9A"
+CONKY_COLOR2="B0B0B0"
+CONKY_COLOR3="000000"
+CONKY_COLOR4="7A7A7A"
+CONKY_COLOR5="D1A954"
+CONKY_COLOR6="AFAFAF"
+CONKY_COLOR7="E6E6E6"
+CONKY_COLOR8="B0B0B0"
+CONKY_COLOR9="7A7A7A"

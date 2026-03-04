@@ -1,0 +1,100 @@
+# ─── OPSEC ALIASES ───────────────────────────────────────────────────────────
+
+# Network checks
+alias myip='curl -s ifconfig.me'
+alias checkip='curl -s https://ipinfo.io/ip'
+alias checkdns='cat /etc/resolv.conf'
+alias ports='netstat -tulanp'
+alias listen='lsof -i -P | grep LISTEN'
+alias estab='lsof -i -P | grep ESTABLISHED'
+
+# Process and connection monitoring
+alias checkcon='ss -tupan | grep ESTABLISHED'
+alias checklis='ss -tupan | grep LISTEN'
+alias checkproc='ps auxf | grep -v grep | grep'
+alias psg='ps aux | grep -v grep | grep -i'
+
+# Emergency and cleanup
+alias killcon='killall -9 openvpn ssh 2>/dev/null'
+alias randmac='randomize-mac.sh'
+alias opsec='opsec-check.sh'
+
+# Cleanup operations
+alias clear-logs='sudo find /var/log -name '\''opsec*'\'' -type f -exec truncate -s 0 {} \; && sudo truncate -s 0 /var/log/syslog /var/log/auth.log 2>/dev/null'
+alias clear-history='history -c && > ~/.bash_history && > ~/.zsh_history'
+alias shred-file='shred -vfz -n 3'
+
+# Anonymity
+alias anon-on='sudo systemctl start tor && . torsocks on'
+alias anon-off='. torsocks off && sudo systemctl stop tor'
+alias check-tor='curl -s https://check.torproject.org/api/ip'
+
+# Safe OPSEC status check
+alias opsec-status='echo "OPSEC Status:"; echo "VPN: $(pgrep openvpn > /dev/null && echo "Connected" || echo "Disconnected")"; echo "Tor: $(systemctl is-active tor 2>/dev/null | grep -q active && echo "Active" || echo "Inactive")"; echo "IP: $(curl -s --max-time 2 ifconfig.me || echo "Check failed")"'
+
+# Quick OPSEC check
+alias quick-opsec='opsec-status && echo "" && echo "=== Connections ===" && ss -tupln | grep -E ":443|:9050|:1080" | head -5'
+
+# ─── ADVANCED OPSEC MODE ──────────────────────────────────────────────────────
+
+# Master toggle
+alias opsec-on='sudo /usr/local/bin/opsec-mode.sh on'
+alias opsec-off='sudo /usr/local/bin/opsec-mode.sh off'
+alias opsec-advanced='sudo /usr/local/bin/opsec-mode.sh status'
+
+# Kill switch controls
+alias killswitch-on='sudo /usr/local/bin/opsec-killswitch.sh on'
+alias killswitch-off='sudo /usr/local/bin/opsec-killswitch.sh off'
+alias killswitch-status='sudo /usr/local/bin/opsec-killswitch.sh status'
+
+# Hostname randomization
+alias randhostname='sudo /usr/local/bin/opsec-hostname-randomize.sh'
+
+# Tor circuit management
+alias check-circuit='curl -s --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip'
+alias new-circuit='sudo killall -HUP tor && echo "New Tor circuit requested"'
+
+# DNS leak check
+alias check-dns-leak='echo "=== DNS Leak Check ===" && echo "resolv.conf:" && grep nameserver /etc/resolv.conf && echo "" && echo "Tor DNS test:" && dig +short @127.0.0.1 -p 5353 check.torproject.org 2>/dev/null || echo "Tor DNS not available"'
+
+# OPSEC Config Manager
+alias opsec-config='sudo /usr/local/bin/opsec-config.sh'
+alias opsec-show='sudo /usr/local/bin/opsec-mode.sh status'
+
+# Profile management
+alias opsec-profile='sudo /usr/local/bin/opsec-config.sh --profile'
+
+# Boot mode
+alias opsec-boot-on='sudo /usr/local/bin/opsec-config.sh --boot on'
+alias opsec-boot-off='sudo /usr/local/bin/opsec-config.sh --boot off'
+
+# SSH honeypot check
+alias ssh-safe='/usr/local/bin/opsec-ssh-check.sh'
+
+# Connection monitor
+alias opsec-monitor-start='sudo /usr/local/bin/opsec-monitor.sh start'
+alias opsec-monitor-stop='sudo /usr/local/bin/opsec-monitor.sh stop'
+alias opsec-monitor-status='sudo /usr/local/bin/opsec-monitor.sh status'
+
+# WiFi security
+alias opsec-wifi='sudo /usr/local/bin/opsec-wifi-check.sh'
+
+# Conky widget controls — position: tl tc tr bl bc br (default: bl)
+alias opsec-widget-kill='killall conky 2>/dev/null && echo "Widget stopped" || echo "Widget not running"'
+opsec-widget() { ~/.config/conky/opsec-widget-launch.sh "${1:-bl}"; }
+opsec-widget-restart() { ~/.config/conky/opsec-widget-launch.sh "${1:-bl}"; }
+
+# Deployment level and banner control
+alias opsec-level='sudo /usr/local/bin/opsec-config.sh --level apply'
+alias opsec-level-list='sudo /usr/local/bin/opsec-config.sh --level list'
+alias opsec-banner-set='sudo /usr/local/bin/opsec-config.sh --banner'
+alias opsec-toggle='/usr/local/bin/opsec-toggle.sh'
+
+# Preflight and break-glass
+alias opsec-preflight='/usr/local/bin/opsec-preflight.sh'
+alias opsec-score='/usr/local/bin/opsec-preflight.sh --score'
+alias opsec-breakglass='sudo /usr/local/bin/opsec-mode.sh breakglass'
+alias opsec-breakglass-off='sudo /usr/local/bin/opsec-mode.sh breakglass-off'
+
+# ─── OPSEC TERMINAL BANNER ──────────────────────────────────────────────────
+[ -x /usr/local/bin/opsec-banner.sh ] && /usr/local/bin/opsec-banner.sh

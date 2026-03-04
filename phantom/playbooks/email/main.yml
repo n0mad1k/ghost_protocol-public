@@ -1,0 +1,11 @@
+---
+# Email deployment — Coming soon
+# This is a stub playbook. Full implementation planned.
+
+- name: Deploy Email Server
+  hosts: all
+  become: true
+  tasks:
+    - name: Placeholder
+      debug:
+        msg: "Email playbook not yet implemented. Check phantom/README.md for status."

@@ -1,0 +1,44 @@
+---
+# Element Web frontend installation
+
+- name: Install nginx (if not already)
+  apt:
+    name: nginx
+    state: present
+
+- name: Create Element Web directory
+  file:
+    path: /var/www/element
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+
+- name: Download latest Element Web release
+  shell: |
+    LATEST=$(curl -s https://api.github.com/repos/element-hq/element-web/releases/latest | grep -oP '"tag_name": "\K[^"]+')
+    curl -sL "https://github.com/element-hq/element-web/releases/download/${LATEST}/element-${LATEST}.tar.gz" | tar xz -C /var/www/element --strip-components=1
+  args:
+    creates: /var/www/element/index.html
+
+- name: Deploy Element Web config
+  copy:
+    dest: /var/www/element/config.json
+    content: |
+      {
+        "default_server_config": {
+          "m.homeserver": {
+            "base_url": "https://{{ matrix_domain }}",
+            "server_name": "{{ matrix_server_name }}"
+          }
+        },
+        "brand": "Element",
+        "integrations_ui_url": "",
+        "integrations_rest_url": "",
+        "disable_guests": true,
+        "disable_3pid_login": false,
+        "default_theme": "dark"
+      }
+    owner: www-data
+    group: www-data
+    mode: "0644"

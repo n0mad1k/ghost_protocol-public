@@ -1,0 +1,92 @@
+---
+# All-in-One deployment — multiple services on a single server
+# Installs nginx as reverse proxy with TLS termination via Certbot,
+# then deploys selected services behind vhost routing.
+#
+# NOTE: This playbook includes task files directly rather than
+# importing full playbooks, to allow conditional composition.
+
+- name: All-in-One Privacy Server
+  hosts: all
+  become: true
+  vars:
+    base_domain: "{{ domain }}"
+    selected_services: "{{ services | default([]) }}"
+    certbot_email: "{{ certbot_email | default('') }}"
+    target_host: "{{ target_host | default('localhost') }}"
+
+  tasks:
+    # ─── Base: Nginx + Certbot ────────────────────────────────────────
+    - name: Install nginx and certbot
+      apt:
+        name:
+          - nginx
+          - certbot
+          - python3-certbot-nginx
+        state: present
+
+    - name: Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: reload nginx
+
+    - name: Allow HTTP/HTTPS through UFW
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "80"
+        - "443"
+
+    # ─── Deploy Individual Services (task files, not full playbooks) ──
+    - name: Deploy Matrix — Synapse
+      include_tasks: "{{ playbook_dir }}/../matrix/tasks/synapse.yml"
+      when: "'matrix' in selected_services"
+
+    - name: Deploy Matrix — Element Web
+      include_tasks: "{{ playbook_dir }}/../matrix/tasks/element.yml"
+      when: "'matrix' in selected_services and (matrix_element_web | default(true) | bool)"
+
+    - name: Deploy Matrix — Nginx vhost
+      include_tasks: "{{ playbook_dir }}/../matrix/tasks/nginx.yml"
+      when: "'matrix' in selected_services"
+
+    - name: Deploy WireGuard — Install
+      include_tasks: "{{ playbook_dir }}/../vpn/tasks/install.yml"
+      when: "'vpn' in selected_services"
+
+    - name: Deploy WireGuard — Configure
+      include_tasks: "{{ playbook_dir }}/../vpn/tasks/configure.yml"
+      when: "'vpn' in selected_services"
+
+    - name: Deploy Pi-hole — Install
+      include_tasks: "{{ playbook_dir }}/../dns/tasks/install.yml"
+      when: "'dns' in selected_services"
+
+    - name: Deploy Pi-hole — Configure
+      include_tasks: "{{ playbook_dir }}/../dns/tasks/configure.yml"
+      when: "'dns' in selected_services"
+
+    # Stub services — print notice
+    - name: Notice for stub services
+      debug:
+        msg: "Service '{{ item }}' playbook not yet implemented — skipping"
+      loop: "{{ selected_services | select('in', ['cloud', 'vault', 'media', 'email']) | list }}"
+
+  handlers:
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded
+
+    - name: restart synapse
+      service:
+        name: matrix-synapse
+        state: restarted
+
+    - name: restart sshd
+      service:
+        name: sshd
+        state: restarted

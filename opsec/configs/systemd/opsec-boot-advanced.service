@@ -1,0 +1,18 @@
+[Unit]
+Description=OPSEC Boot-into-Advanced Mode Initializer
+Documentation=man:opsec-mode(8)
+DefaultDependencies=no
+Before=network-pre.target NetworkManager.service networking.service
+Before=opsec-mac-randomize.service opsec-hostname-randomize.service opsec-killswitch.service
+After=local-fs.target sysinit.target
+ConditionPathExists=/etc/opsec/boot-advanced.enabled
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/opsec-boot-init.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

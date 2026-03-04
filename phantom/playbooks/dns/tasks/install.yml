@@ -1,0 +1,62 @@
+---
+# Pi-hole installation via Docker
+
+- name: Install Docker prerequisites
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+
+- name: Add Docker GPG key
+  apt_key:
+    url: https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg
+    state: present
+
+- name: Add Docker repository
+  apt_repository:
+    repo: "deb https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
+    state: present
+
+- name: Install Docker
+  apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+
+- name: Enable Docker service
+  service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Stop systemd-resolved (conflicts with Pi-hole on port 53)
+  service:
+    name: systemd-resolved
+    state: stopped
+    enabled: false
+  failed_when: false
+
+- name: Set DNS fallback
+  copy:
+    dest: /etc/resolv.conf
+    content: |
+      nameserver 9.9.9.9
+      nameserver 1.1.1.1
+    mode: "0644"
+
+- name: Allow DNS through UFW
+  ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+  loop:
+    - { port: "53", proto: "tcp" }
+    - { port: "53", proto: "udp" }
+    - { port: "80", proto: "tcp" }

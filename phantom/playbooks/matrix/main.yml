@@ -1,0 +1,38 @@
+---
+# Matrix (Synapse) + Element Web deployment
+# Installs Synapse homeserver with optional Element Web frontend
+
+- name: Deploy Matrix Homeserver
+  hosts: all
+  become: true
+  vars:
+    matrix_domain: "{{ domain }}"
+    matrix_server_name: "{{ matrix_server_name | default(domain) }}"
+    matrix_admin: "{{ matrix_admin_user | default('admin') }}"
+    matrix_admin_pass: "{{ matrix_admin_password }}"
+    matrix_registration_enabled: "{{ matrix_registration | default(false) }}"
+    element_enabled: "{{ matrix_element_web | default(true) }}"
+    matrix_signing_key: "{{ matrix_signing_key }}"
+    target_host: "{{ target_host | default('localhost') }}"
+
+  tasks:
+    - name: Include Synapse installation tasks
+      include_tasks: tasks/synapse.yml
+
+    - name: Include Element Web tasks
+      include_tasks: tasks/element.yml
+      when: element_enabled | bool
+
+    - name: Include nginx reverse proxy tasks
+      include_tasks: tasks/nginx.yml
+
+  handlers:
+    - name: restart synapse
+      service:
+        name: matrix-synapse
+        state: restarted
+
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded

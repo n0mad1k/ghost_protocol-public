@@ -1,0 +1,66 @@
+---
+# Pi-hole Docker configuration and launch
+
+- name: Create Pi-hole directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/pihole
+    - /opt/pihole/etc-pihole
+    - /opt/pihole/etc-dnsmasq.d
+
+- name: Generate Pi-hole admin password
+  shell: "openssl rand -base64 16"
+  register: pihole_password
+  args:
+    creates: /opt/pihole/.password
+
+- name: Save admin password
+  copy:
+    content: "{{ pihole_password.stdout }}"
+    dest: /opt/pihole/.password
+    mode: "0600"
+  when: pihole_password.changed
+
+- name: Deploy Pi-hole Docker Compose
+  copy:
+    dest: /opt/pihole/docker-compose.yml
+    content: |
+      services:
+        pihole:
+          container_name: pihole
+          image: pihole/pihole:latest
+          ports:
+            - "53:53/tcp"
+            - "53:53/udp"
+            - "80:80/tcp"
+          environment:
+            TZ: UTC
+            WEBPASSWORD_FILE: /run/secrets/webpassword
+            PIHOLE_DNS_: "{{ pihole_upstream }}"
+            DNSSEC: "true"
+            QUERY_LOGGING: "false"
+          volumes:
+            - /opt/pihole/etc-pihole:/etc/pihole
+            - /opt/pihole/etc-dnsmasq.d:/etc/dnsmasq.d
+          secrets:
+            - webpassword
+          restart: unless-stopped
+          dns:
+            - 127.0.0.1
+            - 9.9.9.9
+      secrets:
+        webpassword:
+          file: /opt/pihole/.password
+    mode: "0644"
+
+- name: Start Pi-hole
+  shell: cd /opt/pihole && docker compose up -d
+  args:
+    creates: /opt/pihole/etc-pihole/pihole-FTL.db
+
+- name: Display admin password
+  debug:
+    msg: "Pi-hole admin password: {{ pihole_password.stdout | default('(see /opt/pihole/.password)') }}"

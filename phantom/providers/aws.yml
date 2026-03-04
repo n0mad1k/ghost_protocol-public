@@ -1,0 +1,105 @@
+---
+# Provision an AWS EC2 instance for phantom deployment
+# Requires: aws_access_key, aws_secret_key variables
+
+- name: Provision AWS EC2 Instance
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    aws_region: "{{ region | default('us-east-1') }}"
+    ec2_instance_type: "{{ instance_type | default('t3.micro') }}"
+    ec2_ami: "{{ ami | default('') }}"
+    ec2_key_name: "phantom-{{ deploy_id }}"
+    ssh_key_path: "{{ ssh_key }}.pub"
+
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ aws_access_key }}"
+    AWS_SECRET_ACCESS_KEY: "{{ aws_secret_key }}"
+    AWS_DEFAULT_REGION: "{{ aws_region }}"
+
+  tasks:
+    - name: Read SSH public key
+      slurp:
+        src: "{{ ssh_key_path }}"
+      register: ssh_pubkey
+
+    - name: Import SSH key to AWS
+      amazon.aws.ec2_key:
+        name: "{{ ec2_key_name }}"
+        key_material: "{{ ssh_pubkey.content | b64decode | trim }}"
+        region: "{{ aws_region }}"
+
+    - name: Find latest Debian AMI (if not specified)
+      amazon.aws.ec2_ami_info:
+        region: "{{ aws_region }}"
+        owners: ["136693071363"]
+        filters:
+          name: "debian-12-amd64-*"
+          architecture: x86_64
+          virtualization-type: hvm
+      register: ami_results
+      when: ec2_ami == ""
+
+    - name: Set AMI fact
+      set_fact:
+        ec2_ami: "{{ (ami_results.images | sort(attribute='creation_date') | last).image_id }}"
+      when: ec2_ami == ""
+
+    - name: Create security group
+      amazon.aws.ec2_security_group:
+        name: "phantom-{{ deploy_id }}"
+        description: "phantom deployment {{ deploy_id }}"
+        region: "{{ aws_region }}"
+        rules:
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            cidr_ip: 0.0.0.0/0
+          - proto: tcp
+            from_port: 443
+            to_port: 443
+            cidr_ip: 0.0.0.0/0
+      register: sg_result
+
+    - name: Launch EC2 instance
+      amazon.aws.ec2_instance:
+        name: "phantom-{{ deploy_id }}"
+        key_name: "{{ ec2_key_name }}"
+        instance_type: "{{ ec2_instance_type }}"
+        image_id: "{{ ec2_ami }}"
+        region: "{{ aws_region }}"
+        security_group: "{{ sg_result.group_id }}"
+        wait: true
+        state: running
+      register: ec2_result
+
+    - name: Set target host fact
+      set_fact:
+        target_host: "{{ ec2_result.instances[0].public_ip_address }}"
+
+    - name: Display instance info
+      debug:
+        msg: |
+          EC2 instance provisioned:
+            ID: {{ ec2_result.instances[0].instance_id }}
+            IP: {{ target_host }}
+            Region: {{ aws_region }}
+            Type: {{ ec2_instance_type }}
+
+    - name: Write provisioned host IP for phantom
+      copy:
+        content: "{{ target_host }}"
+        dest: "{{ _host_output_file }}"
+      when: _host_output_file is defined
+
+    - name: Wait for SSH
+      wait_for:
+        host: "{{ target_host }}"
+        port: 22
+        delay: 15
+        timeout: 300

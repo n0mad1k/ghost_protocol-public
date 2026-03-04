@@ -1,0 +1,14 @@
+# OPSEC DNS Servers
+# Quad9 (Security focused)
+nameserver 9.9.9.9
+nameserver 149.112.112.112
+
+# Cloudflare (Privacy focused)
+nameserver 1.1.1.1
+nameserver 1.0.0.1
+
+# DNS Options
+options edns0 trust-ad
+options timeout:1
+options attempts:1
+options rotate

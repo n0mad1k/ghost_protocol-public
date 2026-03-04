@@ -1,0 +1,14 @@
+# CyberPunk theme — neon cyan/pink/green on black
+# Deployed to /etc/opsec/themes/ — sourced by opsec_generate_conky()
+THEME_LABEL="CyberPunk"
+CONKY_BG="000000"
+CONKY_COLOR0="FF3B3B"
+CONKY_COLOR1="00F5A0"
+CONKY_COLOR2="08F7FE"
+CONKY_COLOR3="000000"
+CONKY_COLOR4="08F7FE"
+CONKY_COLOR5="FF2E88"
+CONKY_COLOR6="00D1FF"
+CONKY_COLOR7="EAEAFF"
+CONKY_COLOR8="08F7FE"
+CONKY_COLOR9="2A2A2A"
