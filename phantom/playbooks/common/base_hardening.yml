@@ -6,7 +6,7 @@
   hosts: all
   become: true
   vars:
-    ssh_port: "{{ ssh_port | default(22) }}"
+    _ssh_port: "{{ ssh_port | default('22') }}"
     ssh_allow_password: false
 
   tasks:
@@ -51,7 +51,7 @@
     - name: Allow SSH through UFW
       ufw:
         rule: allow
-        port: "{{ ssh_port }}"
+        port: "{{ _ssh_port }}"
         proto: tcp
 
     - name: Enable UFW
@@ -59,18 +59,45 @@
         state: enabled
 
     # ─── Fail2ban ───────────────────────────────────────────────────────
-    - name: Configure fail2ban SSH jail
+    - name: Configure fail2ban jails
       copy:
         dest: /etc/fail2ban/jail.local
         content: |
-          [sshd]
-          enabled = true
-          port = {{ ssh_port }}
-          filter = sshd
-          logpath = /var/log/auth.log
-          maxretry = 5
+          [DEFAULT]
           bantime = 3600
           findtime = 600
+          maxretry = 5
+          banaction = ufw
+
+          [sshd]
+          enabled = true
+          port = {{ _ssh_port }}
+          filter = sshd
+          backend = systemd
+          maxretry = 3
+          bantime = 7200
+
+          [nginx-http-auth]
+          enabled = true
+          port = http,https
+          filter = nginx-http-auth
+          logpath = /var/log/nginx/error.log
+          maxretry = 3
+
+          [nginx-botsearch]
+          enabled = true
+          port = http,https
+          filter = nginx-botsearch
+          logpath = /var/log/nginx/access.log
+          maxretry = 5
+
+          [nginx-limit-req]
+          enabled = true
+          port = http,https
+          filter = nginx-limit-req
+          logpath = /var/log/nginx/error.log
+          maxretry = 5
+          bantime = 3600
         mode: "0644"
       notify: restart fail2ban
 
@@ -101,6 +128,41 @@
         path: /etc/ssh/sshd_config
         regexp: "^#?X11Forwarding"
         line: "X11Forwarding no"
+      notify: restart sshd
+
+    - name: Set SSH MaxAuthTries
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?MaxAuthTries"
+        line: "MaxAuthTries 3"
+      notify: restart sshd
+
+    - name: Set SSH ClientAliveInterval
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?ClientAliveInterval"
+        line: "ClientAliveInterval 300"
+      notify: restart sshd
+
+    - name: Set SSH ClientAliveCountMax
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?ClientAliveCountMax"
+        line: "ClientAliveCountMax 2"
+      notify: restart sshd
+
+    - name: Set SSH MaxStartups
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?MaxStartups"
+        line: "MaxStartups 10:30:100"
+      notify: restart sshd
+
+    - name: Set SSH LoginGraceTime
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?LoginGraceTime"
+        line: "LoginGraceTime 60"
       notify: restart sshd
 
     # ─── Automatic Security Updates ─────────────────────────────────────

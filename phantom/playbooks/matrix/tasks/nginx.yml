@@ -1,6 +1,5 @@
 ---
 # Nginx reverse proxy for Matrix + Element
-# Two-phase: HTTP-only first for certbot, then full SSL config
 
 - name: Create certbot webroot
   file:
@@ -17,15 +16,8 @@
       server {
           listen 80;
           server_name {{ matrix_domain }};
-
-          location /.well-known/acme-challenge/ {
-              root /var/www/certbot;
-          }
-
-          location / {
-              return 200 'phantom setup in progress';
-              add_header Content-Type text/plain;
-          }
+          location /.well-known/acme-challenge/ { root /var/www/certbot; }
+          location / { return 200 'phantom setup in progress'; add_header Content-Type text/plain; }
       }
     mode: "0644"
   notify: reload nginx
@@ -40,35 +32,38 @@
 - name: Flush handlers to apply HTTP config
   meta: flush_handlers
 
-- name: Obtain TLS certificate
-  command: >
-    certbot certonly --webroot -w /var/www/certbot
-    -d {{ matrix_domain }}
-    --non-interactive
-    --agree-tos
-    {% if certbot_email is defined and certbot_email %}
-    --email {{ certbot_email }}
-    {% else %}
-    --register-unsafely-without-email
-    {% endif %}
-  args:
-    creates: "/etc/letsencrypt/live/{{ matrix_domain }}/fullchain.pem"
+- name: Setup TLS (certbot with self-signed fallback)
+  include_tasks: ../../common/tls_setup.yml
+  vars:
+    _tls_domain: "{{ matrix_domain }}"
 
-- name: Deploy full SSL nginx config
+- name: Disable server tokens in nginx
+  lineinfile:
+    path: /etc/nginx/nginx.conf
+    regexp: "^\\s*#?\\s*server_tokens"
+    line: "\tserver_tokens off;"
+    insertafter: "sendfile on;"
+  notify: reload nginx
+
+- name: Remove default nginx site
+  file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: reload nginx
+
+- name: Deploy hardened SSL nginx config
   copy:
     dest: /etc/nginx/sites-available/matrix
     content: |
+      # Rate limiting zones
+      limit_req_zone $binary_remote_addr zone=matrix_login:10m rate=3r/m;
+      limit_req_zone $binary_remote_addr zone=matrix_general:10m rate=10r/s;
+
       server {
           listen 80;
           server_name {{ matrix_domain }};
-
-          location /.well-known/acme-challenge/ {
-              root /var/www/certbot;
-          }
-
-          location / {
-              return 301 https://$host$request_uri;
-          }
+          location /.well-known/acme-challenge/ { root /var/www/certbot; }
+          location / { return 301 https://$host$request_uri; }
       }
 
       server {
@@ -76,24 +71,51 @@
           listen 8448 ssl http2;
           server_name {{ matrix_domain }};
 
-          ssl_certificate /etc/letsencrypt/live/{{ matrix_domain }}/fullchain.pem;
-          ssl_certificate_key /etc/letsencrypt/live/{{ matrix_domain }}/privkey.pem;
-
+          # TLS
+          ssl_certificate {{ _ssl_cert }};
+          ssl_certificate_key {{ _ssl_key }};
           ssl_protocols TLSv1.2 TLSv1.3;
-          ssl_ciphers HIGH:!aNULL:!MD5;
-          ssl_prefer_server_ciphers on;
+          ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+          ssl_prefer_server_ciphers off;
+          ssl_session_timeout 1d;
+          ssl_session_cache shared:SSL:10m;
+          ssl_session_tickets off;
+
+          # Security headers
+          add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+          add_header X-Frame-Options "SAMEORIGIN" always;
+          add_header X-Content-Type-Options "nosniff" always;
+          add_header X-XSS-Protection "1; mode=block" always;
+          add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+          add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
 
           client_max_body_size 50m;
 
-          # Synapse
-          location ~* ^(\/_matrix|\/_synapse\/client) {
+          # Block Synapse admin API from external access
+          location /_synapse/admin {
+              return 403;
+          }
+
+          # Login endpoint — strict rate limit
+          location /_matrix/client/v3/login {
+              limit_req zone=matrix_login burst=3 nodelay;
               proxy_pass http://127.0.0.1:8008;
               proxy_set_header X-Forwarded-For $remote_addr;
               proxy_set_header X-Forwarded-Proto $scheme;
               proxy_set_header Host $host;
           }
 
-          # .well-known delegation
+          # Matrix client + federation API
+          location ~* ^(\/_matrix|\/_synapse\/client) {
+              limit_req zone=matrix_general burst=20 nodelay;
+              proxy_pass http://127.0.0.1:8008;
+              proxy_set_header X-Forwarded-For $remote_addr;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header Host $host;
+              proxy_read_timeout 600s;
+              proxy_send_timeout 600s;
+          }
+
           location /.well-known/matrix/server {
               return 200 '{"m.server": "{{ matrix_domain }}:443"}';
               add_header Content-Type application/json;
@@ -105,10 +127,11 @@
               add_header Access-Control-Allow-Origin *;
           }
 
-          # Element Web (if enabled)
+          # Element Web
           location / {
               root /var/www/element;
               try_files $uri $uri/ /index.html;
+              add_header Content-Security-Policy "frame-ancestors 'self'" always;
           }
       }
     mode: "0644"

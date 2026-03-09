@@ -1,11 +1,32 @@
 ---
-# Vault deployment — Coming soon
-# This is a stub playbook. Full implementation planned.
+# Vaultwarden (Bitwarden-compatible) deployment — pre-built binary + systemd
 
-- name: Deploy Vault Server
+- name: Deploy Vaultwarden Password Manager
   hosts: all
   become: true
+  vars:
+    vaultwarden_domain: "{{ domain }}"
+    vaultwarden_admin_token: "{{ vault_admin_token }}"
+    vaultwarden_signups: "{{ vault_signups_allowed | default(false) }}"
+    target_host: "{{ target_host | default('localhost') }}"
+
   tasks:
-    - name: Placeholder
-      debug:
-        msg: "Vault playbook not yet implemented. Check phantom/README.md for status."
+    - name: Include Vaultwarden installation
+      include_tasks: tasks/install.yml
+
+    - name: Include Vaultwarden configuration
+      include_tasks: tasks/configure.yml
+
+    - name: Include Vaultwarden nginx reverse proxy
+      include_tasks: tasks/nginx.yml
+
+  handlers:
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded
+
+    - name: restart vaultwarden
+      service:
+        name: vaultwarden
+        state: restarted

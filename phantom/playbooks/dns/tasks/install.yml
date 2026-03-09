@@ -1,40 +1,17 @@
 ---
-# Pi-hole installation via Docker
+# Pi-hole native installation (no Docker)
 
-- name: Install Docker prerequisites
+- name: Install Pi-hole prerequisites
   apt:
     name:
-      - apt-transport-https
-      - ca-certificates
       - curl
-      - gnupg
-      - lsb-release
+      - git
+      - iproute2
+      - whiptail
+      - ca-certificates
+      - cron
     state: present
-
-- name: Add Docker GPG key
-  apt_key:
-    url: https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg
-    state: present
-
-- name: Add Docker repository
-  apt_repository:
-    repo: "deb https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
-    state: present
-
-- name: Install Docker
-  apt:
-    name:
-      - docker-ce
-      - docker-ce-cli
-      - containerd.io
-      - docker-compose-plugin
-    state: present
-
-- name: Enable Docker service
-  service:
-    name: docker
-    state: started
-    enabled: true
+    update_cache: true
 
 - name: Stop systemd-resolved (conflicts with Pi-hole on port 53)
   service:
@@ -43,13 +20,52 @@
     enabled: false
   failed_when: false
 
-- name: Set DNS fallback
+- name: Set DNS fallback for installation
   copy:
     dest: /etc/resolv.conf
     content: |
       nameserver 9.9.9.9
       nameserver 1.1.1.1
     mode: "0644"
+
+- name: Create Pi-hole config directory
+  file:
+    path: /etc/pihole
+    state: directory
+    mode: "0755"
+
+- name: Deploy setupVars.conf for unattended install
+  copy:
+    dest: /etc/pihole/setupVars.conf
+    content: |
+      PIHOLE_INTERFACE={{ ansible_default_ipv4.interface | default('eth0') }}
+      PIHOLE_DNS_1={{ pihole_upstream.split(';')[0] | default('9.9.9.9') }}
+      PIHOLE_DNS_2={{ pihole_upstream.split(';')[1] | default('149.112.112.112') }}
+      QUERY_LOGGING=false
+      INSTALL_WEB_SERVER=true
+      INSTALL_WEB_INTERFACE=true
+      LIGHTTPD_ENABLED=false
+      CACHE_SIZE=10000
+      DNS_FQDN_REQUIRED=true
+      DNS_BOGUS_PRIV=true
+      DNSSEC=true
+      BLOCKING_ENABLED=true
+      WEBPASSWORD=
+    mode: "0644"
+
+- name: Clone Pi-hole repository
+  git:
+    repo: https://github.com/pi-hole/pi-hole.git
+    dest: /opt/pihole-install
+    version: master
+    depth: 1
+
+- name: Run Pi-hole installer (unattended)
+  command: bash /opt/pihole-install/automated\ install/basic-install.sh --unattended
+  args:
+    creates: /usr/local/bin/pihole
+  environment:
+    PIHOLE_SKIP_OS_CHECK: "true"
 
 - name: Allow DNS through UFW
   ufw:
@@ -59,4 +75,14 @@
   loop:
     - { port: "53", proto: "tcp" }
     - { port: "53", proto: "udp" }
-    - { port: "80", proto: "tcp" }
+
+- name: Allow Pi-hole admin from private networks only
+  ufw:
+    rule: allow
+    port: "80"
+    proto: tcp
+    from_ip: "{{ item }}"
+  loop:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"

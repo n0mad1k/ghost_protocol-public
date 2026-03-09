@@ -1,0 +1,45 @@
+---
+# Mail-in-a-Box non-interactive installation
+
+- name: Generate admin password
+  command: openssl rand -base64 16
+  register: miab_admin_password
+  args:
+    creates: /root/.miab_admin_password
+
+- name: Save admin password
+  copy:
+    content: "{{ miab_admin_password.stdout }}"
+    dest: /root/.miab_admin_password
+    mode: "0600"
+  when: miab_admin_password.changed
+
+- name: Read saved admin password
+  slurp:
+    src: /root/.miab_admin_password
+  register: miab_password_file
+
+- name: Clone Mail-in-a-Box repository
+  git:
+    repo: https://github.com/mail-in-a-box/mailinabox.git
+    dest: /opt/mailinabox
+    version: main
+    depth: 1
+
+- name: Run Mail-in-a-Box installer (non-interactive)
+  command: bash /opt/mailinabox/setup/start.sh
+  args:
+    creates: /etc/mailinabox.conf
+  environment:
+    NONINTERACTIVE: "1"
+    PRIMARY_HOSTNAME: "{{ miab_domain }}"
+    EMAIL_ADDR: "{{ miab_first_user }}"
+    EMAIL_PW: "{{ (miab_password_file.content | b64decode).strip() }}"
+  timeout: 600
+
+- name: Display admin credentials
+  debug:
+    msg: >
+      Mail-in-a-Box installed. Admin: {{ miab_first_user }}
+      Password saved to /root/.miab_admin_password
+      Web admin: https://{{ miab_domain }}/admin

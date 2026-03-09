@@ -1,0 +1,43 @@
+---
+# Tear down a Phantom Linode instance by label using raw API calls
+# No extra collections needed — uses uri module (same as provisioning)
+
+- name: Teardown Phantom Linode Instance
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Validate required variables
+      assert:
+        that:
+          - api_token is defined and api_token != ""
+          - instance_label is defined and instance_label != ""
+        fail_msg: "api_token and instance_label are required for teardown"
+
+    - name: List all Linode instances
+      uri:
+        url: https://api.linode.com/v4/linode/instances
+        method: GET
+        headers:
+          Authorization: "Bearer {{ api_token }}"
+        return_content: true
+      register: linode_list
+
+    - name: Find instance by label
+      set_fact:
+        target_instance: "{{ linode_list.json.data | selectattr('label', 'equalto', instance_label) | list | first | default(None) }}"
+
+    - name: Delete instance
+      uri:
+        url: "https://api.linode.com/v4/linode/instances/{{ target_instance.id }}"
+        method: DELETE
+        headers:
+          Authorization: "Bearer {{ api_token }}"
+        status_code: 200
+      when: target_instance is not none and target_instance != None
+      register: deletion
+
+    - name: Report result
+      debug:
+        msg: "{{ (target_instance is not none and target_instance != None) | ternary('Instance ' ~ instance_label ~ ' (ID ' ~ target_instance.id | default('?') ~ ') deleted', 'No instance found with label ' ~ instance_label) }}"

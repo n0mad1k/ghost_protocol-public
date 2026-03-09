@@ -1,0 +1,49 @@
+---
+# Tear down a Phantom AWS EC2 instance
+# Matches c2itall cleanup pattern
+
+- name: Teardown Phantom EC2 Instance
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ aws_access_key }}"
+    AWS_SECRET_ACCESS_KEY: "{{ aws_secret_key }}"
+    AWS_DEFAULT_REGION: "{{ region | default('us-east-1') }}"
+
+  tasks:
+    - name: Find instance by name tag
+      amazon.aws.ec2_instance_info:
+        filters:
+          "tag:Name": "{{ instance_label }}"
+          instance-state-name: ["running", "stopped", "pending"]
+        region: "{{ region | default('us-east-1') }}"
+      register: ec2_info
+
+    - name: Terminate instance
+      amazon.aws.ec2_instance:
+        instance_ids: "{{ ec2_info.instances | map(attribute='instance_id') | list }}"
+        state: absent
+        region: "{{ region | default('us-east-1') }}"
+      when: ec2_info.instances | length > 0
+      register: deletion
+      ignore_errors: true
+
+    - name: Delete security group
+      amazon.aws.ec2_security_group:
+        name: "{{ instance_label }}"
+        state: absent
+        region: "{{ region | default('us-east-1') }}"
+      ignore_errors: true
+
+    - name: Delete key pair
+      amazon.aws.ec2_key:
+        name: "{{ instance_label }}"
+        state: absent
+        region: "{{ region | default('us-east-1') }}"
+      ignore_errors: true
+
+    - name: Report teardown result
+      debug:
+        msg: "Instance {{ instance_label }}: {{ (ec2_info.instances | length > 0) | ternary('Terminated', 'Not found') }}"

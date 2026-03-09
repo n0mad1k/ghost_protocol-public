@@ -1,4 +1,4 @@
-"""Jellyfin media server deployment module (stub — playbook TODO)."""
+"""Jellyfin media server deployment module — official apt repo + nginx."""
 
 CYAN = "\033[38;5;51m"
 WHITE = "\033[38;5;255m"
@@ -9,7 +9,7 @@ RESET = "\033[0m"
 def gather_config(config):
     """Gather Jellyfin configuration."""
     print(f"\n{CYAN}  ┌─ Jellyfin Configuration ──────────────────────────┐{RESET}")
-    print(f"  {CYAN}│{RESET}  {GREY}Note: Playbook coming soon{RESET}")
+    print(f"  {CYAN}│{RESET}  {GREY}Official apt repo + nginx reverse proxy{RESET}")
 
     config["domain"] = config.get("domain") or input(
         f"  {CYAN}│{RESET}  Domain (e.g. media.example.com): "

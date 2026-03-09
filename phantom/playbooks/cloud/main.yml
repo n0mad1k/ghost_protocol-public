@@ -1,11 +1,42 @@
 ---
-# Cloud deployment — Coming soon
-# This is a stub playbook. Full implementation planned.
+# Nextcloud deployment — PHP-FPM + MariaDB + Redis + nginx
 
-- name: Deploy Cloud Server
+- name: Deploy Nextcloud Server
   hosts: all
   become: true
+  vars:
+    nextcloud_domain: "{{ domain }}"
+    nextcloud_admin: "{{ cloud_admin_user | default('admin') }}"
+    nextcloud_storage_gb: "{{ cloud_storage_gb | default('10') }}"
+    target_host: "{{ target_host | default('localhost') }}"
+
   tasks:
-    - name: Placeholder
-      debug:
-        msg: "Cloud playbook not yet implemented. Check phantom/README.md for status."
+    - name: Include Nextcloud installation
+      include_tasks: tasks/install.yml
+
+    - name: Include Nextcloud configuration
+      include_tasks: tasks/configure.yml
+
+    - name: Include Nextcloud nginx reverse proxy
+      include_tasks: tasks/nginx.yml
+
+  handlers:
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded
+
+    - name: restart php-fpm
+      service:
+        name: php8.2-fpm
+        state: restarted
+
+    - name: restart mariadb
+      service:
+        name: mariadb
+        state: restarted
+
+    - name: restart redis
+      service:
+        name: redis-server
+        state: restarted

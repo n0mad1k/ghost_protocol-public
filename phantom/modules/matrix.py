@@ -42,6 +42,8 @@ def gather_config(config):
         if config["domain"].startswith("matrix.") else config["domain"]
 
     config["matrix_signing_key"] = secrets.token_hex(32)
+    config["matrix_form_secret"] = secrets.token_hex(32)
+    config["matrix_macaroon_secret"] = secrets.token_hex(32)
 
     print(f"  {CYAN}└─────────────────────────────────────────────────────┘{RESET}")
     return config

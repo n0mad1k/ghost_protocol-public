@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Phantom — Matrix User Registration
+# Creates a new user on this Synapse homeserver
+set -euo pipefail
+
+SERVER_NAME=$(grep '^server_name:' /etc/matrix-synapse/homeserver.yaml | awk '{print $2}' | tr -d '"')
+SECRET=$(grep 'registration_shared_secret:' /etc/matrix-synapse/homeserver.yaml | awk '{print $2}' | tr -d '"')
+
+echo "============================================"
+echo "  Matrix — Add User"
+echo "  Server: ${SERVER_NAME}"
+echo "============================================"
+echo ""
+
+register_new_matrix_user \
+    --shared-secret "${SECRET}" \
+    http://localhost:8008

@@ -1,4 +1,4 @@
-"""Nextcloud deployment module (stub — playbook TODO)."""
+"""Nextcloud deployment module — PHP-FPM + MariaDB + Redis + nginx."""
 
 CYAN = "\033[38;5;51m"
 WHITE = "\033[38;5;255m"
@@ -9,7 +9,7 @@ RESET = "\033[0m"
 def gather_config(config):
     """Gather Nextcloud configuration."""
     print(f"\n{CYAN}  ┌─ Nextcloud Configuration ─────────────────────────┐{RESET}")
-    print(f"  {CYAN}│{RESET}  {GREY}Note: Playbook coming soon{RESET}")
+    print(f"  {CYAN}│{RESET}  {GREY}PHP-FPM + MariaDB + Redis + nginx{RESET}")
 
     config["domain"] = config.get("domain") or input(
         f"  {CYAN}│{RESET}  Domain (e.g. cloud.example.com): "

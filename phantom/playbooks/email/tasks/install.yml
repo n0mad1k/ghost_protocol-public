@@ -1,0 +1,56 @@
+---
+# Mail-in-a-Box prerequisites and environment setup
+
+- name: Verify Ubuntu distribution
+  assert:
+    that:
+      - ansible_distribution == "Ubuntu"
+    fail_msg: "Mail-in-a-Box requires Ubuntu. Detected: {{ ansible_distribution }}"
+
+- name: Stop conflicting nginx (MIAB manages its own)
+  service:
+    name: nginx
+    state: stopped
+    enabled: false
+  failed_when: false
+
+- name: Set system hostname for MIAB
+  hostname:
+    name: "{{ miab_domain }}"
+
+- name: Update /etc/hostname
+  copy:
+    content: "{{ miab_domain }}\n"
+    dest: /etc/hostname
+    mode: "0644"
+
+- name: Ensure hostname in /etc/hosts
+  lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1'
+    line: "127.0.1.1 {{ miab_domain }}"
+
+- name: Allow mail-related ports through UFW
+  ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+  loop:
+    - { port: "25", proto: "tcp" }
+    - { port: "587", proto: "tcp" }
+    - { port: "993", proto: "tcp" }
+    - { port: "465", proto: "tcp" }
+    - { port: "80", proto: "tcp" }
+    - { port: "443", proto: "tcp" }
+    - { port: "53", proto: "tcp" }
+    - { port: "53", proto: "udp" }
+    - { port: "4190", proto: "tcp" }
+
+- name: Install prerequisites
+  apt:
+    name:
+      - curl
+      - ca-certificates
+      - git
+    state: present
+    update_cache: true

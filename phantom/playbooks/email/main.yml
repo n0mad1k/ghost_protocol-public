@@ -1,11 +1,18 @@
 ---
-# Email deployment — Coming soon
-# This is a stub playbook. Full implementation planned.
+# Mail-in-a-Box deployment — native installer script
+# MIAB manages its own nginx, TLS, DNS, and mail stack
 
-- name: Deploy Email Server
+- name: Deploy Mail-in-a-Box Email Server
   hosts: all
   become: true
+  vars:
+    miab_domain: "{{ domain }}"
+    miab_first_user: "{{ email_first_user }}"
+    target_host: "{{ target_host | default('localhost') }}"
+
   tasks:
-    - name: Placeholder
-      debug:
-        msg: "Email playbook not yet implemented. Check phantom/README.md for status."
+    - name: Include Mail-in-a-Box installation
+      include_tasks: tasks/install.yml
+
+    - name: Include Mail-in-a-Box configuration
+      include_tasks: tasks/configure.yml

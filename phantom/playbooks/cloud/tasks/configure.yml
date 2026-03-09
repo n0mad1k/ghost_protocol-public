@@ -1,0 +1,180 @@
+---
+# Nextcloud database, app, and service configuration
+
+- name: Generate MariaDB password for Nextcloud
+  command: openssl rand -base64 24
+  register: nc_db_password_gen
+  args:
+    creates: /var/www/nextcloud/.db_password
+
+- name: Save DB password
+  copy:
+    content: "{{ nc_db_password_gen.stdout }}"
+    dest: /var/www/nextcloud/.db_password
+    owner: www-data
+    group: www-data
+    mode: "0600"
+  when: nc_db_password_gen.changed
+
+- name: Read saved DB password
+  slurp:
+    src: /var/www/nextcloud/.db_password
+  register: nc_db_password_file
+
+- name: Set DB password fact
+  set_fact:
+    nc_db_pass: "{{ (nc_db_password_file.content | b64decode).strip() }}"
+
+- name: Create Nextcloud MariaDB database
+  mysql_db:
+    name: nextcloud
+    state: present
+    encoding: utf8mb4
+    collation: utf8mb4_general_ci
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Create Nextcloud MariaDB user
+  mysql_user:
+    name: nextcloud
+    password: "{{ nc_db_pass }}"
+    priv: "nextcloud.*:ALL"
+    host: localhost
+    state: present
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Generate admin password
+  command: openssl rand -base64 16
+  register: nc_admin_password_gen
+  args:
+    creates: /var/www/nextcloud/.admin_password
+
+- name: Save admin password
+  copy:
+    content: "{{ nc_admin_password_gen.stdout }}"
+    dest: /var/www/nextcloud/.admin_password
+    owner: www-data
+    group: www-data
+    mode: "0600"
+  when: nc_admin_password_gen.changed
+
+- name: Read saved admin password
+  slurp:
+    src: /var/www/nextcloud/.admin_password
+  register: nc_admin_password_file
+
+- name: Configure PHP-FPM pool for Nextcloud
+  copy:
+    dest: /etc/php/8.2/fpm/pool.d/nextcloud.conf
+    content: |
+      [nextcloud]
+      user = www-data
+      group = www-data
+      listen = /run/php/php8.2-fpm-nextcloud.sock
+      listen.owner = www-data
+      listen.group = www-data
+      pm = dynamic
+      pm.max_children = 16
+      pm.start_servers = 4
+      pm.min_spare_servers = 2
+      pm.max_spare_servers = 8
+      pm.max_requests = 500
+      env[HOSTNAME] = $HOSTNAME
+      env[TMP] = /tmp
+      env[TMPDIR] = /tmp
+      env[TEMP] = /tmp
+      php_value[upload_max_filesize] = 10G
+      php_value[post_max_size] = 10G
+      php_value[memory_limit] = 512M
+      php_value[max_execution_time] = 3600
+      php_value[max_input_time] = 3600
+      php_value[opcache.enable] = 1
+      php_value[opcache.memory_consumption] = 128
+      php_value[opcache.interned_strings_buffer] = 16
+      php_value[opcache.max_accelerated_files] = 10000
+      php_value[opcache.revalidate_freq] = 1
+    mode: "0644"
+  notify: restart php-fpm
+
+- name: Flush handlers to restart PHP-FPM
+  meta: flush_handlers
+
+- name: Install Nextcloud via occ
+  become_user: www-data
+  command: >
+    php /var/www/nextcloud/occ maintenance:install
+    --database mysql
+    --database-name nextcloud
+    --database-user nextcloud
+    --database-pass "{{ nc_db_pass }}"
+    --admin-user "{{ nextcloud_admin }}"
+    --admin-pass "{{ (nc_admin_password_file.content | b64decode).strip() }}"
+    --data-dir /var/www/nextcloud/data
+  args:
+    creates: /var/www/nextcloud/config/config.php
+
+- name: Set trusted domain
+  become_user: www-data
+  command: "php /var/www/nextcloud/occ config:system:set trusted_domains 0 --value={{ nextcloud_domain }}"
+  changed_when: true
+
+- name: Set overwrite.cli.url
+  become_user: www-data
+  command: "php /var/www/nextcloud/occ config:system:set overwrite.cli.url --value=https://{{ nextcloud_domain }}"
+  changed_when: true
+
+- name: Configure Redis caching
+  become_user: www-data
+  command: "php /var/www/nextcloud/occ config:system:set {{ item.key }} --value={{ item.value }} {{ item.type | default('') }}"
+  loop:
+    - { key: "memcache.local", value: "\\OC\\Memcache\\APCu" }
+    - { key: "memcache.distributed", value: "\\OC\\Memcache\\Redis" }
+    - { key: "memcache.locking", value: "\\OC\\Memcache\\Redis" }
+    - { key: "redis host", value: "localhost" }
+    - { key: "redis port", value: "6379", type: "--type=integer" }
+  changed_when: true
+
+- name: Set default phone region
+  become_user: www-data
+  command: "php /var/www/nextcloud/occ config:system:set default_phone_region --value=US"
+  changed_when: true
+
+- name: Deploy Nextcloud cron systemd timer
+  copy:
+    dest: /etc/systemd/system/nextcloud-cron.service
+    content: |
+      [Unit]
+      Description=Nextcloud cron.php
+      After=network.target
+
+      [Service]
+      User=www-data
+      ExecStart=/usr/bin/php /var/www/nextcloud/cron.php
+      Type=oneshot
+    mode: "0644"
+
+- name: Deploy Nextcloud cron timer
+  copy:
+    dest: /etc/systemd/system/nextcloud-cron.timer
+    content: |
+      [Unit]
+      Description=Run Nextcloud cron.php every 5 minutes
+
+      [Timer]
+      OnBootSec=5min
+      OnUnitActiveSec=5min
+      Unit=nextcloud-cron.service
+
+      [Install]
+      WantedBy=timers.target
+    mode: "0644"
+
+- name: Enable Nextcloud cron timer
+  systemd:
+    name: nextcloud-cron.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Display admin credentials
+  debug:
+    msg: "Nextcloud admin credentials saved to /var/www/nextcloud/.admin_password — access at https://{{ nextcloud_domain }}"

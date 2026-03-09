@@ -15,9 +15,9 @@ SERVICES = [
     ("matrix", "Matrix + Element", "Encrypted messaging"),
     ("vpn", "WireGuard VPN", "Private VPN server"),
     ("dns", "Pi-hole DNS", "Ad-blocking DNS"),
-    ("cloud", "Nextcloud", "File sync (stub)"),
-    ("vault", "Vaultwarden", "Password manager (stub)"),
-    ("media", "Jellyfin", "Media server (stub)"),
+    ("cloud", "Nextcloud", "File sync"),
+    ("vault", "Vaultwarden", "Password manager"),
+    ("media", "Jellyfin", "Media server"),
 ]
 
 
@@ -66,18 +66,6 @@ def gather_config(config):
         print(f"  {RED}No services selected.{RESET}")
         return None
 
-    # Warn about stub services
-    STUB_SERVICES = {"cloud", "vault", "media", "email"}
-    stubs_selected = [s for s in selected_services if s in STUB_SERVICES]
-    if stubs_selected:
-        stub_labels = {s[0]: s[1] for s in SERVICES}
-        print(f"\n  {YELLOW}Warning: The following services are stubs (playbook not yet implemented):{RESET}")
-        for s in stubs_selected:
-            print(f"    {YELLOW}- {stub_labels.get(s, s)}{RESET}")
-        proceed = input(f"  {YELLOW}Continue anyway? [y/N]:{RESET} ").strip().lower()
-        if proceed != "y":
-            return None
-
     config["services"] = selected_services
     config["all_in_one"] = True
 
@@ -116,7 +104,7 @@ def gather_config(config):
                 if config is None:
                     return None
         except ImportError:
-            pass  # Stub module, skip
+            pass  # Module not yet loaded, skip
     # Restore base domain
     config["domain"] = base_domain
 

@@ -26,6 +26,18 @@
     - name: Include nginx reverse proxy tasks
       include_tasks: tasks/nginx.yml
 
+    - name: Create Tools directory
+      file:
+        path: /root/Tools
+        state: directory
+        mode: "0755"
+
+    - name: Deploy Matrix user creation script
+      template:
+        src: ../common/templates/add-matrix-user.sh.j2
+        dest: /root/Tools/add-matrix-user.sh
+        mode: "0700"
+
   handlers:
     - name: restart synapse
       service:

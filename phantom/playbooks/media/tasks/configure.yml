@@ -1,0 +1,33 @@
+---
+# Jellyfin service configuration
+
+- name: Create media library directory
+  file:
+    path: "{{ jellyfin_library }}"
+    state: directory
+    owner: jellyfin
+    group: jellyfin
+    mode: "0755"
+
+- name: Ensure Jellyfin binds to localhost only
+  lineinfile:
+    path: /etc/jellyfin/network.xml
+    regexp: '<LocalNetworkAddresses>'
+    line: '    <LocalNetworkAddresses><string>127.0.0.1</string></LocalNetworkAddresses>'
+    create: true
+    mode: "0644"
+  notify: restart jellyfin
+  failed_when: false
+
+- name: Enable and start Jellyfin service
+  service:
+    name: jellyfin
+    state: started
+    enabled: true
+
+- name: Wait for Jellyfin to be ready
+  wait_for:
+    port: 8096
+    host: 127.0.0.1
+    delay: 5
+    timeout: 60

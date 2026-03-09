@@ -1,66 +1,66 @@
 ---
-# Pi-hole Docker configuration and launch
-
-- name: Create Pi-hole directories
-  file:
-    path: "{{ item }}"
-    state: directory
-    mode: "0755"
-  loop:
-    - /opt/pihole
-    - /opt/pihole/etc-pihole
-    - /opt/pihole/etc-dnsmasq.d
+# Pi-hole native configuration
 
 - name: Generate Pi-hole admin password
-  shell: "openssl rand -base64 16"
-  register: pihole_password
+  command: openssl rand -base64 16
+  register: pihole_password_gen
   args:
-    creates: /opt/pihole/.password
+    creates: /etc/pihole/.phantom_password
 
 - name: Save admin password
   copy:
-    content: "{{ pihole_password.stdout }}"
-    dest: /opt/pihole/.password
+    content: "{{ pihole_password_gen.stdout }}"
+    dest: /etc/pihole/.phantom_password
     mode: "0600"
-  when: pihole_password.changed
+  when: pihole_password_gen.changed
 
-- name: Deploy Pi-hole Docker Compose
-  copy:
-    dest: /opt/pihole/docker-compose.yml
-    content: |
-      services:
-        pihole:
-          container_name: pihole
-          image: pihole/pihole:latest
-          ports:
-            - "53:53/tcp"
-            - "53:53/udp"
-            - "80:80/tcp"
-          environment:
-            TZ: UTC
-            WEBPASSWORD_FILE: /run/secrets/webpassword
-            PIHOLE_DNS_: "{{ pihole_upstream }}"
-            DNSSEC: "true"
-            QUERY_LOGGING: "false"
-          volumes:
-            - /opt/pihole/etc-pihole:/etc/pihole
-            - /opt/pihole/etc-dnsmasq.d:/etc/dnsmasq.d
-          secrets:
-            - webpassword
-          restart: unless-stopped
-          dns:
-            - 127.0.0.1
-            - 9.9.9.9
-      secrets:
-        webpassword:
-          file: /opt/pihole/.password
-    mode: "0644"
+- name: Read saved password
+  slurp:
+    src: /etc/pihole/.phantom_password
+  register: pihole_password_file
 
-- name: Start Pi-hole
-  shell: cd /opt/pihole && docker compose up -d
-  args:
-    creates: /opt/pihole/etc-pihole/pihole-FTL.db
+- name: Set Pi-hole admin password
+  command: "pihole -a -p {{ (pihole_password_file.content | b64decode).strip() }}"
+  changed_when: true
 
-- name: Display admin password
+- name: Set upstream DNS servers
+  command: "pihole -a setdns {{ pihole_upstream | replace(';', ' ') }}"
+  changed_when: true
+
+- name: Configure blocklist level
+  block:
+    - name: Update gravity (standard blocklist)
+      command: pihole -g
+      changed_when: true
+      when: pihole_blocklist == "standard"
+
+    - name: Add aggressive blocklists
+      lineinfile:
+        path: /etc/pihole/adlists.list
+        line: "{{ item }}"
+        create: true
+        mode: "0644"
+      loop:
+        - "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+        - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"
+      when: pihole_blocklist == "aggressive"
+      notify: update gravity
+
+    - name: Update gravity after blocklist changes
+      command: pihole -g
+      changed_when: true
+      when: pihole_blocklist == "aggressive"
+
+- name: Enable DNSSEC
+  command: pihole -a dnssec on
+  changed_when: true
+
+- name: Ensure pihole-FTL is running
+  service:
+    name: pihole-FTL
+    state: started
+    enabled: true
+
+- name: Display admin credentials
   debug:
-    msg: "Pi-hole admin password: {{ pihole_password.stdout | default('(see /opt/pihole/.password)') }}"
+    msg: "Pi-hole admin password saved to /etc/pihole/.phantom_password — access admin at http://{{ ansible_default_ipv4.address | default('server_ip') }}/admin"

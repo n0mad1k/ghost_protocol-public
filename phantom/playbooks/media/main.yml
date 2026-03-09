@@ -1,11 +1,31 @@
 ---
-# Media deployment — Coming soon
-# This is a stub playbook. Full implementation planned.
+# Jellyfin media server deployment (native package from official repo)
 
-- name: Deploy Media Server
+- name: Deploy Jellyfin Media Server
   hosts: all
   become: true
+  vars:
+    jellyfin_domain: "{{ domain }}"
+    jellyfin_library: "{{ media_library_path | default('/srv/media') }}"
+    target_host: "{{ target_host | default('localhost') }}"
+
   tasks:
-    - name: Placeholder
-      debug:
-        msg: "Media playbook not yet implemented. Check phantom/README.md for status."
+    - name: Include Jellyfin installation
+      include_tasks: tasks/install.yml
+
+    - name: Include Jellyfin configuration
+      include_tasks: tasks/configure.yml
+
+    - name: Include Jellyfin nginx reverse proxy
+      include_tasks: tasks/nginx.yml
+
+  handlers:
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded
+
+    - name: restart jellyfin
+      service:
+        name: jellyfin
+        state: restarted

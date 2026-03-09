@@ -1,0 +1,73 @@
+---
+# Vaultwarden service configuration
+
+- name: Deploy Vaultwarden environment file
+  copy:
+    dest: /opt/vaultwarden/.env
+    content: |
+      DOMAIN=https://{{ vaultwarden_domain }}
+      SIGNUPS_ALLOWED={{ vaultwarden_signups | lower }}
+      ADMIN_TOKEN={{ vaultwarden_admin_token }}
+      ROCKET_ADDRESS=127.0.0.1
+      ROCKET_PORT=8081
+      DATA_FOLDER=/opt/vaultwarden/data
+      WEB_VAULT_FOLDER=/opt/vaultwarden/web-vault
+      LOG_FILE=/opt/vaultwarden/data/vaultwarden.log
+      LOG_LEVEL=warn
+      SENDS_ALLOWED=true
+      EMERGENCY_ACCESS_ALLOWED=true
+      WEBSOCKET_ENABLED=true
+      WEBSOCKET_ADDRESS=127.0.0.1
+      WEBSOCKET_PORT=3012
+    owner: vaultwarden
+    group: vaultwarden
+    mode: "0600"
+  notify: restart vaultwarden
+
+- name: Deploy Vaultwarden systemd unit
+  copy:
+    dest: /etc/systemd/system/vaultwarden.service
+    content: |
+      [Unit]
+      Description=Vaultwarden (Bitwarden-compatible server)
+      Documentation=https://github.com/dani-garcia/vaultwarden
+      After=network.target
+
+      [Service]
+      User=vaultwarden
+      Group=vaultwarden
+      EnvironmentFile=/opt/vaultwarden/.env
+      ExecStart=/opt/vaultwarden/vaultwarden
+      WorkingDirectory=/opt/vaultwarden
+
+      # Hardening
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
+      PrivateDevices=true
+      NoNewPrivileges=true
+      ReadWritePaths=/opt/vaultwarden/data
+
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+    mode: "0644"
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: true
+
+- name: Enable and start Vaultwarden
+  service:
+    name: vaultwarden
+    state: started
+    enabled: true
+
+- name: Wait for Vaultwarden to be ready
+  wait_for:
+    port: 8081
+    host: 127.0.0.1
+    delay: 3
+    timeout: 30

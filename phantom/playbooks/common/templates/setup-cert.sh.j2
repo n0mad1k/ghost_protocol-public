@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Phantom — Let's Encrypt Certificate Setup
+# Deployed by phantom to {{ ansible_host | default('this server') }}
+# Run this script after DNS has propagated to this server's IP.
+set -euo pipefail
+
+DOMAIN="{{ _tls_domain }}"
+SERVER_IP=$(hostname -I | awk '{print $1}')
+
+echo "============================================"
+echo "  Phantom — Certificate Setup"
+echo "============================================"
+echo "  Domain:    ${DOMAIN}"
+echo "  Server IP: ${SERVER_IP}"
+echo ""
+
+# ── DNS Validation ──────────────────────────────────────────────────────
+echo "[*] Checking DNS resolution for ${DOMAIN}..."
+DNS_IP=$(dig +short "${DOMAIN}" @1.1.1.1 2>/dev/null | tail -1)
+
+if [ -z "${DNS_IP}" ]; then
+    echo "[-] DNS lookup failed — ${DOMAIN} does not resolve."
+    echo "    Point your DNS A record to: ${SERVER_IP}"
+    exit 1
+fi
+
+if [ "${DNS_IP}" != "${SERVER_IP}" ]; then
+    echo "[-] DNS mismatch!"
+    echo "    ${DOMAIN} resolves to: ${DNS_IP}"
+    echo "    This server's IP:      ${SERVER_IP}"
+    echo "    Update your DNS A record to point to ${SERVER_IP}"
+    exit 1
+fi
+
+echo "[+] DNS OK — ${DOMAIN} → ${DNS_IP}"
+
+# ── HTTP Reachability Check ─────────────────────────────────────────────
+echo "[*] Verifying HTTP reachability..."
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${DOMAIN}/" --max-time 10 2>/dev/null || echo "000")
+
+if [ "${HTTP_CODE}" = "000" ]; then
+    echo "[!] Warning: HTTP request to ${DOMAIN} failed (timeout or connection refused)"
+    echo "    Certbot may fail if port 80 is not reachable."
+    read -rp "    Continue anyway? [y/N] " CONT
+    [ "${CONT}" = "y" ] || exit 1
+else
+    echo "[+] HTTP reachable (status ${HTTP_CODE})"
+fi
+
+# ── Certbot ─────────────────────────────────────────────────────────────
+echo ""
+echo "[*] Running certbot for ${DOMAIN}..."
+
+# Check if nginx is running — use webroot if so, standalone otherwise
+if systemctl is-active --quiet nginx 2>/dev/null; then
+    echo "    Using webroot mode (nginx running)"
+    mkdir -p /var/www/certbot
+    certbot certonly --webroot -w /var/www/certbot \
+        -d "${DOMAIN}" \
+        --non-interactive \
+        --agree-tos \
+{% if certbot_email is defined and certbot_email %}
+        --email "{{ certbot_email }}" \
+{% else %}
+        --register-unsafely-without-email \
+{% endif %}
+        --force-renewal
+else
+    echo "    Using standalone mode (nginx not running)"
+    certbot certonly --standalone \
+        -d "${DOMAIN}" \
+        --non-interactive \
+        --agree-tos \
+{% if certbot_email is defined and certbot_email %}
+        --email "{{ certbot_email }}" \
+{% else %}
+        --register-unsafely-without-email \
+{% endif %}
+        --force-renewal
+fi
+
+if [ ! -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]; then
+    echo "[-] Certbot failed — certificate not found."
+    exit 1
+fi
+
+echo "[+] Certificate obtained successfully."
+
+# ── Update nginx to use LE cert ─────────────────────────────────────────
+echo "[*] Updating nginx configuration..."
+
+SELF_CERT="/etc/ssl/certs/${DOMAIN}-selfsigned.crt"
+SELF_KEY="/etc/ssl/private/${DOMAIN}-selfsigned.key"
+LE_CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+LE_KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+
+# Replace self-signed cert paths with LE cert paths in all nginx configs
+for CONF in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*; do
+    [ -f "${CONF}" ] || continue
+    if grep -q "${SELF_CERT}" "${CONF}" 2>/dev/null; then
+        sed -i "s|${SELF_CERT}|${LE_CERT}|g" "${CONF}"
+        sed -i "s|${SELF_KEY}|${LE_KEY}|g" "${CONF}"
+        echo "    Updated: ${CONF}"
+    fi
+done
+
+# Test and reload nginx
+if nginx -t 2>/dev/null; then
+    systemctl reload nginx
+    echo "[+] nginx reloaded with Let's Encrypt certificate."
+else
+    echo "[-] nginx config test failed — check configuration manually."
+    exit 1
+fi
+
+echo ""
+echo "============================================"
+echo "  Certificate setup complete!"
+echo "  Domain: https://${DOMAIN}"
+echo "============================================"

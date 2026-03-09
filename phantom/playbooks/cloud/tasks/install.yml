@@ -1,0 +1,96 @@
+---
+# Nextcloud package and dependency installation
+
+- name: Install Nextcloud dependencies
+  apt:
+    name:
+      - php8.2-fpm
+      - php8.2-xml
+      - php8.2-mbstring
+      - php8.2-gd
+      - php8.2-curl
+      - php8.2-zip
+      - php8.2-intl
+      - php8.2-mysql
+      - php8.2-redis
+      - php8.2-apcu
+      - php8.2-imagick
+      - php8.2-bcmath
+      - php8.2-gmp
+      - mariadb-server
+      - redis-server
+      - nginx
+      - certbot
+      - python3-certbot-nginx
+      - unzip
+      - curl
+      - ca-certificates
+    state: present
+    update_cache: true
+
+- name: Enable and start MariaDB
+  service:
+    name: mariadb
+    state: started
+    enabled: true
+
+- name: Enable and start Redis
+  service:
+    name: redis-server
+    state: started
+    enabled: true
+
+- name: Enable and start PHP-FPM
+  service:
+    name: php8.2-fpm
+    state: started
+    enabled: true
+
+- name: Get latest Nextcloud version
+  uri:
+    url: https://download.nextcloud.com/server/releases/latest.tar.bz2.sha256
+    return_content: true
+  register: nc_checksum_response
+
+- name: Parse Nextcloud checksum
+  set_fact:
+    nc_checksum: "{{ nc_checksum_response.content.split()[0] }}"
+
+- name: Download Nextcloud tarball
+  get_url:
+    url: https://download.nextcloud.com/server/releases/latest.tar.bz2
+    dest: /tmp/nextcloud.tar.bz2
+    checksum: "sha256:{{ nc_checksum }}"
+    mode: "0644"
+
+- name: Extract Nextcloud
+  unarchive:
+    src: /tmp/nextcloud.tar.bz2
+    dest: /var/www/
+    remote_src: true
+    creates: /var/www/nextcloud/index.php
+
+- name: Set Nextcloud ownership
+  file:
+    path: /var/www/nextcloud
+    state: directory
+    owner: www-data
+    group: www-data
+    recurse: true
+
+- name: Create Nextcloud data directory
+  file:
+    path: /var/www/nextcloud/data
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0770"
+
+- name: Allow HTTP/HTTPS through UFW
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - "80"
+    - "443"

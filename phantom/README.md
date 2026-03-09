@@ -8,12 +8,12 @@ Deploy self-hosted privacy infrastructure with a single command. Supports cloud 
 |---|---|---|
 | Matrix + Element | Ready | Encrypted messaging homeserver with web client |
 | WireGuard VPN | Ready | Private VPN server with client config generation |
-| Pi-hole DNS | Ready | Ad-blocking DNS server (Docker-based) |
+| Pi-hole DNS | Ready | Ad-blocking DNS server (native) |
+| Nextcloud | Ready | Self-hosted file sync and collaboration |
+| Vaultwarden | Ready | Self-hosted Bitwarden password manager |
+| Jellyfin | Ready | Self-hosted media server |
+| Mail-in-a-Box | Ready | Self-hosted email |
 | All-in-One | Ready | Multiple services on one server with nginx reverse proxy |
-| Nextcloud | Stub | Self-hosted file sync and collaboration |
-| Vaultwarden | Stub | Self-hosted Bitwarden password manager |
-| Jellyfin | Stub | Self-hosted media server |
-| Mail-in-a-Box | Stub | Self-hosted email |
 
 ## Deployment Targets
 
@@ -87,6 +87,10 @@ phantom/
 │   ├── matrix/         # Synapse + Element
 │   ├── vpn/            # WireGuard
 │   ├── dns/            # Pi-hole
+│   ├── cloud/          # Nextcloud
+│   ├── vault/          # Vaultwarden
+│   ├── media/          # Jellyfin
+│   ├── email/          # Mail-in-a-Box
 │   └── all_in_one/     # Multi-service composer
 ├── providers/          # Cloud provisioning
 └── logs/               # Deployment artifacts

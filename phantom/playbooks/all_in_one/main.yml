@@ -5,6 +5,7 @@
 #
 # NOTE: This playbook includes task files directly rather than
 # importing full playbooks, to allow conditional composition.
+# NOTE: Email (MIAB) is excluded — it manages its own nginx/DNS/TLS.
 
 - name: All-in-One Privacy Server
   hosts: all
@@ -41,6 +42,8 @@
         - "443"
 
     # ─── Deploy Individual Services (task files, not full playbooks) ──
+
+    # Matrix
     - name: Deploy Matrix — Synapse
       include_tasks: "{{ playbook_dir }}/../matrix/tasks/synapse.yml"
       when: "'matrix' in selected_services"
@@ -53,6 +56,14 @@
       include_tasks: "{{ playbook_dir }}/../matrix/tasks/nginx.yml"
       when: "'matrix' in selected_services"
 
+    - name: Deploy Matrix user creation script
+      template:
+        src: "{{ playbook_dir }}/../common/templates/add-matrix-user.sh.j2"
+        dest: /root/Tools/add-matrix-user.sh
+        mode: "0700"
+      when: "'matrix' in selected_services"
+
+    # WireGuard VPN
     - name: Deploy WireGuard — Install
       include_tasks: "{{ playbook_dir }}/../vpn/tasks/install.yml"
       when: "'vpn' in selected_services"
@@ -61,6 +72,7 @@
       include_tasks: "{{ playbook_dir }}/../vpn/tasks/configure.yml"
       when: "'vpn' in selected_services"
 
+    # Pi-hole DNS
     - name: Deploy Pi-hole — Install
       include_tasks: "{{ playbook_dir }}/../dns/tasks/install.yml"
       when: "'dns' in selected_services"
@@ -69,11 +81,44 @@
       include_tasks: "{{ playbook_dir }}/../dns/tasks/configure.yml"
       when: "'dns' in selected_services"
 
-    # Stub services — print notice
-    - name: Notice for stub services
-      debug:
-        msg: "Service '{{ item }}' playbook not yet implemented — skipping"
-      loop: "{{ selected_services | select('in', ['cloud', 'vault', 'media', 'email']) | list }}"
+    # Nextcloud
+    - name: Deploy Nextcloud — Install
+      include_tasks: "{{ playbook_dir }}/../cloud/tasks/install.yml"
+      when: "'cloud' in selected_services"
+
+    - name: Deploy Nextcloud — Configure
+      include_tasks: "{{ playbook_dir }}/../cloud/tasks/configure.yml"
+      when: "'cloud' in selected_services"
+
+    - name: Deploy Nextcloud — Nginx vhost
+      include_tasks: "{{ playbook_dir }}/../cloud/tasks/nginx.yml"
+      when: "'cloud' in selected_services"
+
+    # Vaultwarden
+    - name: Deploy Vaultwarden — Install
+      include_tasks: "{{ playbook_dir }}/../vault/tasks/install.yml"
+      when: "'vault' in selected_services"
+
+    - name: Deploy Vaultwarden — Configure
+      include_tasks: "{{ playbook_dir }}/../vault/tasks/configure.yml"
+      when: "'vault' in selected_services"
+
+    - name: Deploy Vaultwarden — Nginx vhost
+      include_tasks: "{{ playbook_dir }}/../vault/tasks/nginx.yml"
+      when: "'vault' in selected_services"
+
+    # Jellyfin
+    - name: Deploy Jellyfin — Install
+      include_tasks: "{{ playbook_dir }}/../media/tasks/install.yml"
+      when: "'media' in selected_services"
+
+    - name: Deploy Jellyfin — Configure
+      include_tasks: "{{ playbook_dir }}/../media/tasks/configure.yml"
+      when: "'media' in selected_services"
+
+    - name: Deploy Jellyfin — Nginx vhost
+      include_tasks: "{{ playbook_dir }}/../media/tasks/nginx.yml"
+      when: "'media' in selected_services"
 
   handlers:
     - name: reload nginx
@@ -84,6 +129,36 @@
     - name: restart synapse
       service:
         name: matrix-synapse
+        state: restarted
+
+    - name: restart php-fpm
+      service:
+        name: php8.2-fpm
+        state: restarted
+
+    - name: restart mariadb
+      service:
+        name: mariadb
+        state: restarted
+
+    - name: restart redis
+      service:
+        name: redis-server
+        state: restarted
+
+    - name: restart vaultwarden
+      service:
+        name: vaultwarden
+        state: restarted
+
+    - name: restart jellyfin
+      service:
+        name: jellyfin
+        state: restarted
+
+    - name: restart pihole-FTL
+      service:
+        name: pihole-FTL
         state: restarted
 
     - name: restart sshd

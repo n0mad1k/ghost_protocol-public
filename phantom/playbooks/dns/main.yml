@@ -1,5 +1,5 @@
 ---
-# Pi-hole DNS server deployment (Docker-based)
+# Pi-hole DNS server deployment (native installer)
 
 - name: Deploy Pi-hole DNS Server
   hosts: all
@@ -16,3 +16,9 @@
 
     - name: Include Pi-hole configuration
       include_tasks: tasks/configure.yml
+
+  handlers:
+    - name: restart pihole-FTL
+      service:
+        name: pihole-FTL
+        state: restarted

@@ -7,11 +7,12 @@
   connection: local
   gather_facts: false
   vars:
+    deploy_id: "{{ deployment_id }}"
     linode_token: "{{ api_token }}"
     linode_region: "{{ region | default('us-east') }}"
     linode_plan: "{{ plan | default('g6-nanode-1') }}"
     linode_image: "{{ image | default('linode/debian12') }}"
-    linode_label: "phantom-{{ deploy_id }}"
+    linode_label: "ph-{{ deployment_id }}"
     ssh_key_path: "{{ ssh_key }}.pub"
 
   tasks:
@@ -19,6 +20,10 @@
       slurp:
         src: "{{ ssh_key_path }}"
       register: ssh_pubkey
+
+    - name: Generate root password (required by API, SSH key auth used instead)
+      command: openssl rand -base64 32
+      register: root_pass_gen
 
     - name: Create Linode instance
       uri:
@@ -33,6 +38,7 @@
           region: "{{ linode_region }}"
           image: "{{ linode_image }}"
           label: "{{ linode_label }}"
+          root_pass: "{{ root_pass_gen.stdout }}"
           authorized_keys:
             - "{{ ssh_pubkey.content | b64decode | trim }}"
           booted: true
@@ -56,6 +62,12 @@
       copy:
         content: "{{ target_host }}"
         dest: "{{ _host_output_file }}"
+      when: _host_output_file is defined
+
+    - name: Write instance ID for teardown
+      copy:
+        content: "{{ linode_result.json.id }}"
+        dest: "{{ _host_output_file | dirname }}/instance_id"
       when: _host_output_file is defined
 
     - name: Wait for SSH

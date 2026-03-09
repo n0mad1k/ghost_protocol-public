@@ -1,0 +1,41 @@
+---
+# Jellyfin installation from official apt repository
+
+- name: Install prerequisites
+  apt:
+    name:
+      - curl
+      - gnupg
+      - ca-certificates
+      - nginx
+      - certbot
+      - python3-certbot-nginx
+    state: present
+    update_cache: true
+
+- name: Add Jellyfin GPG signing key
+  ansible.builtin.get_url:
+    url: https://repo.jellyfin.org/jellyfin_team.gpg.key
+    dest: /usr/share/keyrings/jellyfin-archive-keyring.asc
+    mode: "0644"
+
+- name: Add Jellyfin apt repository
+  apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/jellyfin-archive-keyring.asc] https://repo.jellyfin.org/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} main"
+    state: present
+    filename: jellyfin
+
+- name: Install Jellyfin
+  apt:
+    name: jellyfin
+    state: present
+    update_cache: true
+
+- name: Allow HTTP/HTTPS through UFW
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - "80"
+    - "443"

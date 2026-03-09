@@ -1,0 +1,59 @@
+---
+# Shared TLS setup: tries certbot, falls back to self-signed
+# Include with: include_tasks: ../common/tls_setup.yml
+# Required vars: _tls_domain (the domain to get a cert for)
+
+- name: Attempt TLS certificate from Let's Encrypt
+  command: >
+    certbot certonly --webroot -w /var/www/certbot
+    -d {{ _tls_domain }}
+    --non-interactive
+    --agree-tos
+    {% if certbot_email is defined and certbot_email %}
+    --email {{ certbot_email }}
+    {% else %}
+    --register-unsafely-without-email
+    {% endif %}
+  args:
+    creates: "/etc/letsencrypt/live/{{ _tls_domain }}/fullchain.pem"
+  register: _certbot_result
+  ignore_errors: true
+
+- name: Generate self-signed certificate (fallback)
+  command: >
+    openssl req -x509 -nodes -days 365 -newkey rsa:4096
+    -keyout /etc/ssl/private/{{ _tls_domain }}-selfsigned.key
+    -out /etc/ssl/certs/{{ _tls_domain }}-selfsigned.crt
+    -subj "/CN={{ _tls_domain }}"
+  args:
+    creates: "/etc/ssl/certs/{{ _tls_domain }}-selfsigned.crt"
+  when: _certbot_result is failed
+
+- name: Set cert paths (certbot)
+  set_fact:
+    _ssl_cert: "/etc/letsencrypt/live/{{ _tls_domain }}/fullchain.pem"
+    _ssl_key: "/etc/letsencrypt/live/{{ _tls_domain }}/privkey.pem"
+  when: _certbot_result is not failed
+
+- name: Set cert paths (self-signed)
+  set_fact:
+    _ssl_cert: "/etc/ssl/certs/{{ _tls_domain }}-selfsigned.crt"
+    _ssl_key: "/etc/ssl/private/{{ _tls_domain }}-selfsigned.key"
+  when: _certbot_result is failed
+
+- name: Warn about self-signed certificate
+  debug:
+    msg: "Using self-signed TLS cert. Point DNS to this server and run: certbot certonly --webroot -w /var/www/certbot -d {{ _tls_domain }}"
+  when: _certbot_result is failed
+
+- name: Create Tools directory
+  file:
+    path: /root/Tools
+    state: directory
+    mode: "0755"
+
+- name: Deploy cert setup script
+  template:
+    src: ../common/templates/setup-cert.sh.j2
+    dest: /root/Tools/setup-cert.sh
+    mode: "0700"
