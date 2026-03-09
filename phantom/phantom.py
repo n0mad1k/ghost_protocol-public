@@ -564,6 +564,20 @@ def _mask(token):
     return token[:4] + "…" + token[-4:]
 
 
+# Per-service recommended instance sizes — minimum viable for each workload
+SERVICE_PLANS = {
+    #                  Linode plan        AWS type     Notes
+    "vpn":       {"linode": "g6-nanode-1",   "aws": "t3.micro"},    # ~64MB RAM usage
+    "dns":       {"linode": "g6-nanode-1",   "aws": "t3.micro"},    # Pi-hole is tiny
+    "vault":     {"linode": "g6-nanode-1",   "aws": "t3.micro"},    # Vaultwarden ~50MB
+    "cloud":     {"linode": "g6-standard-1", "aws": "t3.small"},    # Nextcloud + MariaDB + Redis
+    "matrix":    {"linode": "g6-standard-2", "aws": "t3.medium"},   # Synapse + Postgres + Element (memory hungry)
+    "media":     {"linode": "g6-standard-1", "aws": "t3.small"},    # Jellyfin transcoding benefits from RAM
+    "email":     {"linode": "g6-standard-1", "aws": "t3.small"},    # Mail-in-a-Box full stack
+    "all_in_one": {"linode": "g6-standard-2", "aws": "t3.medium"}, # Multiple services
+}
+
+
 # ─── Provider Selection ─────────────────────────────────────────────────────
 
 def select_provider():
@@ -581,10 +595,11 @@ def select_provider():
     return providers.get(choice)
 
 
-def gather_credentials(provider, config):
+def gather_credentials(provider, config, service_type=None):
     """Gather provider-specific credentials.
 
     Loads defaults from c2itall vars files or environment variables.
+    Uses per-service recommended plans when available.
     Press Enter at any prompt to accept the stored default.
     """
     defaults = _load_provider_defaults()
@@ -594,7 +609,9 @@ def gather_credentials(provider, config):
         d = defaults.get("linode", {})
         stored_token = d.get("api_token", "")
         default_region = d.get("region", "us-east")
-        default_plan = d.get("plan", "g6-nanode-1")
+        # Per-service plan takes priority over provider-level default
+        svc_plans = SERVICE_PLANS.get(service_type, {})
+        default_plan = svc_plans.get("linode", d.get("plan", "g6-nanode-1"))
 
         if stored_token:
             ok(f"Linode token loaded: {_mask(stored_token)}")
@@ -612,7 +629,9 @@ def gather_credentials(provider, config):
         stored_key = d.get("aws_access_key", "")
         stored_secret = d.get("aws_secret_key", "")
         default_region = d.get("region", "us-east-1")
-        default_type = d.get("instance_type", "t3.micro")
+        # Per-service instance type takes priority over provider-level default
+        svc_plans = SERVICE_PLANS.get(service_type, {})
+        default_type = svc_plans.get("aws", d.get("instance_type", "t3.micro"))
 
         if stored_key:
             ok(f"AWS credentials loaded: {_mask(stored_key)}")
@@ -1040,7 +1059,7 @@ def main_menu():
 
         config = {"deployment_id": generate_id()}
 
-        if not gather_credentials(provider, config):
+        if not gather_credentials(provider, config, service_type=selected):
             continue
 
         # Gather service-specific config
