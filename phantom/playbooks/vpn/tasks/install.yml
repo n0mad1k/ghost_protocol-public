@@ -24,6 +24,19 @@
     sysctl_set: true
     reload: true
 
+- name: Set UFW default forward policy to accept (required for VPN routing)
+  lineinfile:
+    path: /etc/default/ufw
+    regexp: '^DEFAULT_FORWARD_POLICY='
+    line: 'DEFAULT_FORWARD_POLICY="ACCEPT"'
+  notify: reload ufw
+
+- name: Allow WireGuard port through UFW
+  ufw:
+    rule: allow
+    port: "{{ wg_port }}"
+    proto: udp
+
 - name: Generate server private key
   shell: wg genkey
   register: wg_server_privkey
@@ -46,9 +59,3 @@
   shell: "echo '{{ server_privkey_content.content | b64decode | trim }}' | wg pubkey"
   register: wg_server_pubkey
   changed_when: false
-
-- name: Allow WireGuard port through UFW
-  ufw:
-    rule: allow
-    port: "{{ wg_port }}"
-    proto: udp
