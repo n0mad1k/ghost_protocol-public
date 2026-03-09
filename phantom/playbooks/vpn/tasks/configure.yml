@@ -6,6 +6,11 @@
   register: primary_interface
   changed_when: false
 
+- name: Set computed vars
+  set_fact:
+    _iface: "{{ primary_interface.stdout | trim }}"
+    _subnet_base: "{{ wg_subnet.split('.')[0:3] | join('.') }}"
+
 - name: Generate client keys
   shell: |
     mkdir -p /etc/wireguard/clients
@@ -26,19 +31,18 @@
   ignore_errors: true
 
 - name: Build WireGuard server config
-  vars:
-    _iface: "{{ primary_interface.stdout | trim }}"
-    _addr: "{{ wg_subnet | regex_replace('/\\d+$', '') | regex_replace('\\.[0-9]+$', '.1/24') }}"
   shell: |
     SERVER_PRIVKEY=$(cat /etc/wireguard/server_private.key)
-    cat > /etc/wireguard/wg0.conf << 'CONFEOF'
-    [Interface]
-    Address = {{ _addr }}
-    ListenPort = {{ wg_port }}
-    SaveConfig = false
-    CONFEOF
+
+    # Header + PrivateKey (needs shell expansion)
+    echo "[Interface]" > /etc/wireguard/wg0.conf
+    echo "Address = {{ _subnet_base }}.1/24" >> /etc/wireguard/wg0.conf
+    echo "ListenPort = {{ wg_port }}" >> /etc/wireguard/wg0.conf
     echo "PrivateKey = ${SERVER_PRIVKEY}" >> /etc/wireguard/wg0.conf
-    cat >> /etc/wireguard/wg0.conf << 'CONFEOF'
+    echo "SaveConfig = false" >> /etc/wireguard/wg0.conf
+
+    # PostUp/PostDown rules (Jinja2 vars, no shell expansion needed)
+    cat >> /etc/wireguard/wg0.conf << 'RULESEOF'
     PostUp = iptables -A FORWARD -i wg0 -o {{ _iface }} -j ACCEPT
     PostUp = iptables -A FORWARD -i {{ _iface }} -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
     PostUp = iptables -t nat -A POSTROUTING -o {{ _iface }} -s {{ wg_subnet }} -j MASQUERADE
@@ -57,8 +61,9 @@
     PostDown = iptables -D INPUT -i wg0 -p tcp --dport 22 -j DROP
     PostDown = iptables -D INPUT -i wg0 -p tcp --dport 80 -j DROP
     PostDown = iptables -D INPUT -i wg0 -p tcp --dport 443 -j DROP
-    CONFEOF
+    RULESEOF
 
+    # Peers
     for i in $(seq 1 {{ wg_clients }}); do
       CLIENT_PUBKEY=$(cat /etc/wireguard/clients/client${i}_public.key)
       CLIENT_PSK=$(cat /etc/wireguard/clients/client${i}_psk.key)
@@ -66,7 +71,7 @@
       echo "[Peer]" >> /etc/wireguard/wg0.conf
       echo "PublicKey = ${CLIENT_PUBKEY}" >> /etc/wireguard/wg0.conf
       echo "PresharedKey = ${CLIENT_PSK}" >> /etc/wireguard/wg0.conf
-      echo "AllowedIPs = {{ wg_subnet | regex_replace('/\\d+$', '') | regex_replace('\\.[0-9]+$', '') }}.$(( i + 1 ))/32" >> /etc/wireguard/wg0.conf
+      echo "AllowedIPs = {{ _subnet_base }}.$(( i + 1 ))/32" >> /etc/wireguard/wg0.conf
     done
 
     chmod 600 /etc/wireguard/wg0.conf
@@ -90,7 +95,7 @@
     for i in $(seq 1 {{ wg_clients }}); do
       CLIENT_PRIVKEY=$(cat /etc/wireguard/clients/client${i}_private.key)
       CLIENT_PSK=$(cat /etc/wireguard/clients/client${i}_psk.key)
-      CLIENT_IP="{{ wg_subnet | regex_replace('/\\d+$', '') | regex_replace('\\.[0-9]+$', '') }}.$(( i + 1 ))"
+      CLIENT_IP="{{ _subnet_base }}.$(( i + 1 ))"
 
       cat > /etc/wireguard/clients/client${i}.conf << CLIENTEOF
     [Interface]
