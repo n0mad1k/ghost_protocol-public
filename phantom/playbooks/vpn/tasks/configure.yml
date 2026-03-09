@@ -26,36 +26,61 @@
   ignore_errors: true
 
 - name: Build WireGuard server config
+  vars:
+    _iface: "{{ primary_interface.stdout | trim }}"
+    _addr: "{{ wg_subnet | regex_replace('/\\d+$', '') | regex_replace('\\.[0-9]+$', '.1/24') }}"
   shell: |
     SERVER_PRIVKEY=$(cat /etc/wireguard/server_private.key)
-    IFACE={{ primary_interface.stdout | trim }}
-    SUBNET="{{ wg_subnet }}"
-
-    cat > /etc/wireguard/wg0.conf << EOF
+    cat > /etc/wireguard/wg0.conf << 'CONFEOF'
     [Interface]
-    Address = {{ wg_subnet | regex_replace('/\\d+$', '') | regex_replace('\\.[0-9]+$', '.1/24') }}
+    Address = {{ _addr }}
     ListenPort = {{ wg_port }}
-    PrivateKey = ${SERVER_PRIVKEY}
     SaveConfig = false
-    PostUp = iptables -A FORWARD -i wg0 -o ${IFACE} -j ACCEPT; iptables -A FORWARD -i ${IFACE} -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -A POSTROUTING -o ${IFACE} -s ${SUBNET} -j MASQUERADE; ip6tables -A FORWARD -i wg0 -o ${IFACE} -j ACCEPT 2>/dev/null; ip6tables -A FORWARD -i ${IFACE} -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; ip6tables -t nat -A POSTROUTING -o ${IFACE} -j MASQUERADE 2>/dev/null; iptables -I INPUT -i wg0 -p tcp --dport 22 -j DROP; iptables -I INPUT -i wg0 -p tcp --dport 80 -j DROP; iptables -I INPUT -i wg0 -p tcp --dport 443 -j DROP
-    PostDown = iptables -D FORWARD -i wg0 -o ${IFACE} -j ACCEPT; iptables -D FORWARD -i ${IFACE} -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -D POSTROUTING -o ${IFACE} -s ${SUBNET} -j MASQUERADE; ip6tables -D FORWARD -i wg0 -o ${IFACE} -j ACCEPT 2>/dev/null; ip6tables -D FORWARD -i ${IFACE} -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; ip6tables -t nat -D POSTROUTING -o ${IFACE} -j MASQUERADE 2>/dev/null; iptables -D INPUT -i wg0 -p tcp --dport 22 -j DROP; iptables -D INPUT -i wg0 -p tcp --dport 80 -j DROP; iptables -D INPUT -i wg0 -p tcp --dport 443 -j DROP
-    EOF
+    CONFEOF
+    echo "PrivateKey = ${SERVER_PRIVKEY}" >> /etc/wireguard/wg0.conf
+    cat >> /etc/wireguard/wg0.conf << 'CONFEOF'
+    PostUp = iptables -A FORWARD -i wg0 -o {{ _iface }} -j ACCEPT
+    PostUp = iptables -A FORWARD -i {{ _iface }} -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    PostUp = iptables -t nat -A POSTROUTING -o {{ _iface }} -s {{ wg_subnet }} -j MASQUERADE
+    PostUp = ip6tables -A FORWARD -i wg0 -o {{ _iface }} -j ACCEPT || true
+    PostUp = ip6tables -A FORWARD -i {{ _iface }} -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || true
+    PostUp = ip6tables -t nat -A POSTROUTING -o {{ _iface }} -j MASQUERADE || true
+    PostUp = iptables -I INPUT -i wg0 -p tcp --dport 22 -j DROP
+    PostUp = iptables -I INPUT -i wg0 -p tcp --dport 80 -j DROP
+    PostUp = iptables -I INPUT -i wg0 -p tcp --dport 443 -j DROP
+    PostDown = iptables -D FORWARD -i wg0 -o {{ _iface }} -j ACCEPT
+    PostDown = iptables -D FORWARD -i {{ _iface }} -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    PostDown = iptables -t nat -D POSTROUTING -o {{ _iface }} -s {{ wg_subnet }} -j MASQUERADE
+    PostDown = ip6tables -D FORWARD -i wg0 -o {{ _iface }} -j ACCEPT || true
+    PostDown = ip6tables -D FORWARD -i {{ _iface }} -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || true
+    PostDown = ip6tables -t nat -D POSTROUTING -o {{ _iface }} -j MASQUERADE || true
+    PostDown = iptables -D INPUT -i wg0 -p tcp --dport 22 -j DROP
+    PostDown = iptables -D INPUT -i wg0 -p tcp --dport 80 -j DROP
+    PostDown = iptables -D INPUT -i wg0 -p tcp --dport 443 -j DROP
+    CONFEOF
 
     for i in $(seq 1 {{ wg_clients }}); do
       CLIENT_PUBKEY=$(cat /etc/wireguard/clients/client${i}_public.key)
       CLIENT_PSK=$(cat /etc/wireguard/clients/client${i}_psk.key)
-      cat >> /etc/wireguard/wg0.conf << EOF
-
-    [Peer]
-    PublicKey = ${CLIENT_PUBKEY}
-    PresharedKey = ${CLIENT_PSK}
-    AllowedIPs = {{ wg_subnet | regex_replace('/\\d+$', '') | regex_replace('\\.[0-9]+$', '') }}.$(( i + 1 ))/32
-    EOF
+      echo "" >> /etc/wireguard/wg0.conf
+      echo "[Peer]" >> /etc/wireguard/wg0.conf
+      echo "PublicKey = ${CLIENT_PUBKEY}" >> /etc/wireguard/wg0.conf
+      echo "PresharedKey = ${CLIENT_PSK}" >> /etc/wireguard/wg0.conf
+      echo "AllowedIPs = {{ wg_subnet | regex_replace('/\\d+$', '') | regex_replace('\\.[0-9]+$', '') }}.$(( i + 1 ))/32" >> /etc/wireguard/wg0.conf
     done
 
     chmod 600 /etc/wireguard/wg0.conf
   args:
     creates: /etc/wireguard/wg0.conf
+
+- name: Verify WireGuard config
+  shell: cat /etc/wireguard/wg0.conf
+  register: wg_config_check
+  changed_when: false
+
+- name: Show generated config (debug)
+  debug:
+    var: wg_config_check.stdout_lines
 
 - name: Generate client config files
   shell: |
@@ -67,7 +92,7 @@
       CLIENT_PSK=$(cat /etc/wireguard/clients/client${i}_psk.key)
       CLIENT_IP="{{ wg_subnet | regex_replace('/\\d+$', '') | regex_replace('\\.[0-9]+$', '') }}.$(( i + 1 ))"
 
-      cat > /etc/wireguard/clients/client${i}.conf << EOF
+      cat > /etc/wireguard/clients/client${i}.conf << CLIENTEOF
     [Interface]
     PrivateKey = ${CLIENT_PRIVKEY}
     Address = ${CLIENT_IP}/32
@@ -79,7 +104,7 @@
     Endpoint = ${SERVER_ENDPOINT}
     AllowedIPs = {{ wg_allowed_ips }}
     PersistentKeepalive = 25
-    EOF
+    CLIENTEOF
 
       qrencode -t ansiutf8 < /etc/wireguard/clients/client${i}.conf > /etc/wireguard/clients/client${i}_qr.txt 2>/dev/null || true
     done
