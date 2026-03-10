@@ -127,6 +127,39 @@
   command: "php /var/www/nextcloud/occ config:system:set default_phone_region --value=US"
   changed_when: true
 
+- name: Clear default skeleton files
+  file:
+    path: /var/www/nextcloud/core/skeleton
+    state: "{{ item }}"
+    owner: www-data
+    group: www-data
+  loop:
+    - absent
+    - directory
+
+- name: Set empty skeleton directory
+  become_user: www-data
+  command: "php /var/www/nextcloud/occ config:system:set skeletondirectory --value="
+  changed_when: true
+
+- name: Remove default files from admin user
+  shell: |
+    rm -rf /var/www/nextcloud/data/{{ nextcloud_admin }}/files/Documents
+    rm -rf /var/www/nextcloud/data/{{ nextcloud_admin }}/files/Photos
+    rm -rf /var/www/nextcloud/data/{{ nextcloud_admin }}/files/Templates
+    rm -f /var/www/nextcloud/data/{{ nextcloud_admin }}/files/Nextcloud.png
+    rm -f "/var/www/nextcloud/data/{{ nextcloud_admin }}/files/Nextcloud intro.mp4"
+    rm -f "/var/www/nextcloud/data/{{ nextcloud_admin }}/files/Nextcloud Manual.pdf"
+    rm -f /var/www/nextcloud/data/{{ nextcloud_admin }}/files/Readme.md
+    rm -f "/var/www/nextcloud/data/{{ nextcloud_admin }}/files/Reasons to use Nextcloud.pdf"
+    rm -f "/var/www/nextcloud/data/{{ nextcloud_admin }}/files/Templates credits.md"
+  changed_when: true
+
+- name: Rescan admin files after cleanup
+  become_user: www-data
+  command: "php /var/www/nextcloud/occ files:scan {{ nextcloud_admin }}"
+  changed_when: true
+
 - name: Deploy Nextcloud cron systemd timer
   copy:
     dest: /etc/systemd/system/nextcloud-cron.service
