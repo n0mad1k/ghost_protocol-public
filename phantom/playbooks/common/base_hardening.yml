@@ -27,15 +27,21 @@
         name:
           - ufw
           - fail2ban
-          - unattended-upgrades
-          - apt-listchanges
           - curl
           - wget
           - gnupg
           - ca-certificates
-          - software-properties-common
         state: present
       when: ansible_os_family == "Debian"
+
+    - name: Install optional hardening packages
+      apt:
+        name:
+          - unattended-upgrades
+          - apt-listchanges
+        state: present
+      when: ansible_os_family == "Debian"
+      ignore_errors: true
 
     # ─── UFW Firewall ───────────────────────────────────────────────────
     - name: Set UFW default deny incoming
