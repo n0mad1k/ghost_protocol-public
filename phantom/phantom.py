@@ -292,13 +292,15 @@ def run_playbook(playbook_path, config, extra_vars=None):
         line = f"{target} ansible_user={ssh_user} ansible_ssh_common_args='{ssh_args}'"
         if ssh_key:
             line += f" ansible_ssh_private_key_file={ssh_key}"
+        if ssh_user != "root":
+            become_pass = config.get("become_password", "")
+            line += " ansible_become=true"
+            if become_pass:
+                line += f" ansible_become_password={become_pass}"
         with open(inv_file, "w") as f:
             f.write(f"[servers]\n{line}\n")
+        inv_file.chmod(0o600)
         cmd.extend(["-i", str(inv_file)])
-
-        # Elevate privileges for non-root users
-        if ssh_user != "root":
-            cmd.append("--become")
 
     # Log file for full ansible output
     log_file = PHANTOM_LOGS / f"deployment_{deployment_id}.log"
@@ -661,6 +663,11 @@ def gather_credentials(provider, config, service_type=None):
         existing_key = input(f"  {CYAN}SSH key path (blank to generate):{RESET} ").strip()
         if existing_key:
             config["ssh_key"] = existing_key
+        if config["ssh_user"] != "root":
+            import getpass
+            sudo_pass = getpass.getpass(f"  {CYAN}Sudo password (blank if NOPASSWD):{RESET} ")
+            if sudo_pass:
+                config["become_password"] = sudo_pass
 
     elif provider == "local":
         config["provider"] = "local"
