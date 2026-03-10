@@ -6,14 +6,14 @@ Deploy self-hosted privacy infrastructure with a single command. Supports cloud 
 
 | Service | Status | Description |
 |---|---|---|
-| Matrix + Element | Ready | Encrypted messaging homeserver with web client |
-| WireGuard VPN | Ready | Private VPN server with client config generation |
-| Pi-hole DNS | Ready | Ad-blocking DNS server (native) |
-| Nextcloud | Ready | Self-hosted file sync and collaboration |
-| Vaultwarden | Ready | Self-hosted Bitwarden password manager |
-| Jellyfin | Ready | Self-hosted media server |
-| Mail-in-a-Box | Ready | Self-hosted email |
-| All-in-One | Ready | Multiple services on one server with nginx reverse proxy |
+| Matrix + Element | Partial | Encrypted messaging homeserver with web client |
+| WireGuard VPN | Partial | Private VPN server with client config generation |
+| Pi-hole DNS | Partial | Ad-blocking DNS server (native) |
+| Nextcloud | Untested | Self-hosted file sync and collaboration |
+| Vaultwarden | Untested | Self-hosted Bitwarden password manager |
+| Jellyfin | Untested | Self-hosted media server |
+| Mail-in-a-Box | Untested | Self-hosted email |
+| All-in-One | Untested | Multiple services on one server with nginx reverse proxy |
 
 ## Tested Deployments
 
