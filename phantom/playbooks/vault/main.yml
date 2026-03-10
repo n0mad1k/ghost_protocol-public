@@ -1,5 +1,5 @@
 ---
-# Vaultwarden (Bitwarden-compatible) deployment — pre-built binary + systemd
+# Vaultwarden (Bitwarden-compatible) deployment — Docker + nginx
 
 - name: Deploy Vaultwarden Password Manager
   hosts: all
@@ -25,8 +25,3 @@
       service:
         name: nginx
         state: reloaded
-
-    - name: restart vaultwarden
-      service:
-        name: vaultwarden
-        state: restarted
