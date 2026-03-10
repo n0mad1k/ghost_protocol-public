@@ -15,6 +15,15 @@ Deploy self-hosted privacy infrastructure with a single command. Supports cloud 
 | Mail-in-a-Box | Ready | Self-hosted email |
 | All-in-One | Ready | Multiple services on one server with nginx reverse proxy |
 
+## Tested Deployments
+
+| Service | Provider | Target | Result |
+|---|---|---|---|
+| Matrix + Element | Linode | Cloud (Ubuntu) | Passed |
+| Matrix + Element | Existing Server | Local (Debian 13) | Passed |
+| WireGuard VPN | Existing Server | Local (Debian 13) | Passed |
+| Pi-hole DNS | Existing Server | Local (Debian 13) | Passed |
+
 ## Deployment Targets
 
 - **Linode** — Automated provisioning via API
