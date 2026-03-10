@@ -9,7 +9,7 @@ Deploy self-hosted privacy infrastructure with a single command. Supports cloud 
 | Matrix + Element | Partial | Encrypted messaging homeserver with web client |
 | WireGuard VPN | Partial | Private VPN server with client config generation |
 | Pi-hole DNS | Partial | Ad-blocking DNS server (native) |
-| Nextcloud | Untested | Self-hosted file sync and collaboration |
+| Nextcloud | Partial | Self-hosted file sync and collaboration |
 | Vaultwarden | Untested | Self-hosted Bitwarden password manager |
 | Jellyfin | Untested | Self-hosted media server |
 | Mail-in-a-Box | Untested | Self-hosted email |
@@ -36,7 +36,7 @@ Deploy self-hosted privacy infrastructure with a single command. Supports cloud 
 | Nextcloud | Linode | Cloud (Ubuntu) | Untested |
 | Nextcloud | AWS | Cloud (Ubuntu) | Untested |
 | Nextcloud | FlokiNET | Cloud | Untested |
-| Nextcloud | Existing Server | Local (Debian 13) | Untested |
+| Nextcloud | Existing Server | Local (Debian 13) | Passed |
 | Vaultwarden | Linode | Cloud (Ubuntu) | Untested |
 | Vaultwarden | AWS | Cloud (Ubuntu) | Untested |
 | Vaultwarden | FlokiNET | Cloud | Untested |
