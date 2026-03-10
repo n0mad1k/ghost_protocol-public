@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+# Phantom — Cloudflare Tunnel Setup
+# Deployed by phantom to {{ ansible_host | default('this server') }}
+# Run this script to expose {{ _tls_domain }} via Cloudflare Tunnel.
+# Requires: a Cloudflare account managing the domain's DNS zone.
+#
+# Usage:
+#   ./setup-tunnel.sh                  # Interactive — prompts for API token
+#   ./setup-tunnel.sh <CF_API_TOKEN>   # Non-interactive — token as argument
+set -euo pipefail
+
+DOMAIN="{{ _tls_domain }}"
+TUNNEL_NAME="phantom-${DOMAIN%%.*}"
+
+echo "============================================"
+echo "  Phantom — Cloudflare Tunnel Setup"
+echo "============================================"
+echo "  Domain:      ${DOMAIN}"
+echo "  Tunnel Name: ${TUNNEL_NAME}"
+echo ""
+
+# ── Get Cloudflare API token ──────────────────────────────────────────
+CF_TOKEN="${1:-}"
+if [ -z "${CF_TOKEN}" ]; then
+    echo "[*] Cloudflare API token required."
+    echo "    Create one at: https://dash.cloudflare.com/profile/api-tokens"
+    echo "    Permissions needed: Zone:DNS:Edit + Account:Cloudflare Tunnel:Edit"
+    echo ""
+    read -rp "  Cloudflare API token: " CF_TOKEN
+    echo ""
+fi
+
+if [ -z "${CF_TOKEN}" ]; then
+    echo "[-] No token provided."
+    exit 1
+fi
+
+# ── Install cloudflared ───────────────────────────────────────────────
+if command -v cloudflared &>/dev/null; then
+    echo "[+] cloudflared already installed: $(cloudflared --version 2>&1 | head -1)"
+else
+    echo "[*] Installing cloudflared..."
+    if [ -f /usr/share/keyrings/cloudflare-main.gpg ]; then
+        echo "    Cloudflare apt repo already configured"
+    else
+        curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+            | tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+        echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
+            | tee /etc/apt/sources.list.d/cloudflared.list >/dev/null
+        apt-get update -qq
+    fi
+    apt-get install -y -qq cloudflared
+    echo "[+] cloudflared installed"
+fi
+
+# ── Resolve Cloudflare Account ID ─────────────────────────────────────
+echo "[*] Verifying API token..."
+ACCOUNT_INFO=$(curl -sf -X GET "https://api.cloudflare.com/client/v4/accounts?page=1&per_page=1" \
+    -H "Authorization: Bearer ${CF_TOKEN}" \
+    -H "Content-Type: application/json" 2>/dev/null || true)
+
+ACCOUNT_ID=$(echo "${ACCOUNT_INFO}" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if data.get('success') and data.get('result'):
+        print(data['result'][0]['id'])
+except: pass
+" 2>/dev/null || true)
+
+if [ -z "${ACCOUNT_ID}" ]; then
+    echo "[-] Failed to verify API token. Check permissions:"
+    echo "    - Account:Cloudflare Tunnel:Edit"
+    echo "    - Zone:DNS:Edit"
+    exit 1
+fi
+echo "[+] Account verified: ${ACCOUNT_ID}"
+
+# ── Create or find existing tunnel via API ────────────────────────────
+echo "[*] Checking for existing tunnel '${TUNNEL_NAME}'..."
+TUNNEL_LIST=$(curl -sf -X GET \
+    "https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/cfd_tunnel?name=${TUNNEL_NAME}&is_deleted=false" \
+    -H "Authorization: Bearer ${CF_TOKEN}" \
+    -H "Content-Type: application/json" 2>/dev/null || true)
+
+TUNNEL_ID=$(echo "${TUNNEL_LIST}" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if data.get('success') and data.get('result'):
+        print(data['result'][0]['id'])
+except: pass
+" 2>/dev/null || true)
+
+if [ -n "${TUNNEL_ID}" ]; then
+    echo "[+] Tunnel '${TUNNEL_NAME}' already exists: ${TUNNEL_ID}"
+else
+    echo "[*] Creating tunnel '${TUNNEL_NAME}'..."
+    TUNNEL_SECRET=$(python3 -c "import secrets, base64; print(base64.b64encode(secrets.token_bytes(32)).decode())")
+
+    CREATE_RESP=$(curl -sf -X POST \
+        "https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/cfd_tunnel" \
+        -H "Authorization: Bearer ${CF_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data "{\"name\": \"${TUNNEL_NAME}\", \"tunnel_secret\": \"${TUNNEL_SECRET}\", \"config_src\": \"local\"}" \
+        2>/dev/null || true)
+
+    TUNNEL_ID=$(echo "${CREATE_RESP}" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if data.get('success') and data.get('result'):
+        print(data['result']['id'])
+    else:
+        errors = data.get('errors', [])
+        if errors:
+            print('ERROR:' + errors[0].get('message', 'unknown'), file=sys.stderr)
+except: pass
+" 2>/dev/null || true)
+
+    if [ -z "${TUNNEL_ID}" ] || [[ "${TUNNEL_ID}" == ERROR:* ]]; then
+        echo "[-] Failed to create tunnel."
+        echo "${CREATE_RESP}" | python3 -m json.tool 2>/dev/null || echo "${CREATE_RESP}"
+        exit 1
+    fi
+    echo "[+] Tunnel created: ${TUNNEL_ID}"
+fi
+
+# ── Write credentials + config ────────────────────────────────────────
+echo "[*] Writing tunnel configuration..."
+mkdir -p /etc/cloudflared
+
+# Write credentials file — required by cloudflared service install
+python3 -c "
+import json
+creds = {'AccountTag': '${ACCOUNT_ID}', 'TunnelID': '${TUNNEL_ID}', 'TunnelSecret': '${TUNNEL_SECRET:-}'}
+with open('/etc/cloudflared/${TUNNEL_ID}.json', 'w') as f:
+    json.dump(creds, f)
+"
+chmod 600 "/etc/cloudflared/${TUNNEL_ID}.json"
+
+cat > /etc/cloudflared/config.yml << CFEOF
+tunnel: ${TUNNEL_ID}
+credentials-file: /etc/cloudflared/${TUNNEL_ID}.json
+
+ingress:
+  - hostname: ${DOMAIN}
+    service: https://localhost:443
+    originRequest:
+      noTLSVerify: true
+  - service: http_status:404
+CFEOF
+chmod 600 /etc/cloudflared/config.yml
+echo "[+] Config written"
+
+# ── Route DNS ─────────────────────────────────────────────────────────
+echo "[*] Setting up DNS route for ${DOMAIN}..."
+
+# Get zone ID for the domain
+BASE_DOMAIN=$(echo "${DOMAIN}" | rev | cut -d. -f1-2 | rev)
+ZONE_INFO=$(curl -sf -X GET \
+    "https://api.cloudflare.com/client/v4/zones?name=${BASE_DOMAIN}" \
+    -H "Authorization: Bearer ${CF_TOKEN}" \
+    -H "Content-Type: application/json" 2>/dev/null || true)
+
+ZONE_ID=$(echo "${ZONE_INFO}" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if data.get('success') and data.get('result'):
+        print(data['result'][0]['id'])
+except: pass
+" 2>/dev/null || true)
+
+if [ -z "${ZONE_ID}" ]; then
+    echo "[-] Could not find zone for ${BASE_DOMAIN}"
+    echo "    Add the CNAME manually: ${DOMAIN} → ${TUNNEL_ID}.cfargotunnel.com"
+else
+    # Check for existing record
+    EXISTING_RECORD=$(curl -sf -X GET \
+        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DOMAIN}" \
+        -H "Authorization: Bearer ${CF_TOKEN}" \
+        -H "Content-Type: application/json" 2>/dev/null || true)
+
+    RECORD_ID=$(echo "${EXISTING_RECORD}" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if data.get('success') and data.get('result'):
+        print(data['result'][0]['id'])
+except: pass
+" 2>/dev/null || true)
+
+    TUNNEL_CNAME="${TUNNEL_ID}.cfargotunnel.com"
+
+    if [ -n "${RECORD_ID}" ]; then
+        # Update existing record to point to tunnel
+        echo "    Updating existing DNS record..."
+        curl -sf -X PUT \
+            "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
+            -H "Authorization: Bearer ${CF_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "{\"type\":\"CNAME\",\"name\":\"${DOMAIN}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}" \
+            >/dev/null 2>&1
+        echo "[+] DNS record updated: ${DOMAIN} → tunnel (proxied)"
+    else
+        # Create new CNAME
+        curl -sf -X POST \
+            "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records" \
+            -H "Authorization: Bearer ${CF_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "{\"type\":\"CNAME\",\"name\":\"${DOMAIN}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}" \
+            >/dev/null 2>&1
+        echo "[+] DNS CNAME created: ${DOMAIN} → tunnel (proxied)"
+    fi
+fi
+
+# ── Install systemd service ──────────────────────────────────────────
+echo "[*] Installing cloudflared systemd service..."
+# Stop existing service if running
+systemctl stop cloudflared 2>/dev/null || true
+
+# Try cloudflared's built-in installer first
+if ! cloudflared service install 2>/dev/null; then
+    # Fallback: write unit file manually
+    if [ ! -f /etc/systemd/system/cloudflared.service ]; then
+        cat > /etc/systemd/system/cloudflared.service << SVCEOF
+[Unit]
+Description=cloudflared tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+TimeoutStartSec=0
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config.yml tunnel run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+    fi
+fi
+
+systemctl daemon-reload
+systemctl enable cloudflared
+systemctl start cloudflared
+echo "[+] cloudflared service started"
+
+# ── Verify ────────────────────────────────────────────────────────────
+echo ""
+echo "[*] Waiting for tunnel to connect..."
+sleep 5
+
+if systemctl is-active --quiet cloudflared; then
+    echo "[+] cloudflared service is running"
+else
+    echo "[-] cloudflared service failed to start"
+    echo "    Check: journalctl -u cloudflared --no-pager -n 20"
+    exit 1
+fi
+
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://${DOMAIN}/" --max-time 10 2>/dev/null || echo "000")
+if [ "${HTTP_CODE}" != "000" ] && [ "${HTTP_CODE}" != "502" ] && [ "${HTTP_CODE}" != "503" ]; then
+    echo "[+] Tunnel verified — https://${DOMAIN}/ returned HTTP ${HTTP_CODE}"
+else
+    echo "[!] Tunnel may need a moment to propagate."
+    echo "    DNS changes can take 1-5 minutes."
+    echo "    Test: curl -I https://${DOMAIN}/"
+fi
+
+echo ""
+echo "============================================"
+echo "  Cloudflare Tunnel setup complete!"
+echo ""
+echo "  Domain:  https://${DOMAIN}"
+echo "  Tunnel:  ${TUNNEL_NAME} (${TUNNEL_ID})"
+echo "  Service: systemctl status cloudflared"
+echo ""
+echo "  To remove: cloudflared tunnel delete ${TUNNEL_NAME}"
+echo "============================================"

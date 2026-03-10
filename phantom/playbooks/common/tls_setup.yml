@@ -1,7 +1,16 @@
 ---
-# Shared TLS setup: tries certbot, falls back to self-signed
+# Shared TLS setup: tries certbot for public domains, self-signed for LAN
 # Include with: include_tasks: ../common/tls_setup.yml
 # Required vars: _tls_domain (the domain to get a cert for)
+# Outputs: _ssl_cert, _ssl_key, _is_selfsigned
+
+- name: Detect if domain is public (not IP, not .local/.lan/.home/.internal/.test)
+  set_fact:
+    _is_public_domain: >-
+      {{ _tls_domain is not regex('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+         and _tls_domain is not regex('\.(local|lan|home|internal|test)$')
+         and _tls_domain is not regex('^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)')
+         and _tls_domain is not regex('^(localhost|127\.)') }}
 
 - name: Attempt TLS certificate from Let's Encrypt
   command: >
@@ -18,33 +27,66 @@
     creates: "/etc/letsencrypt/live/{{ _tls_domain }}/fullchain.pem"
   register: _certbot_result
   ignore_errors: true
+  when: _is_public_domain | bool
 
-- name: Generate self-signed certificate (fallback)
+- name: Init certbot result as failed for LAN deployments
+  set_fact:
+    _certbot_result: { "failed": true, "skipped": true }
+  when: not (_is_public_domain | bool)
+
+- name: Generate self-signed certificate with SAN (IP)
   command: >
     openssl req -x509 -nodes -days 365 -newkey rsa:4096
     -keyout /etc/ssl/private/{{ _tls_domain }}-selfsigned.key
     -out /etc/ssl/certs/{{ _tls_domain }}-selfsigned.crt
     -subj "/CN={{ _tls_domain }}"
+    -addext "subjectAltName=IP:{{ _tls_domain }}"
   args:
     creates: "/etc/ssl/certs/{{ _tls_domain }}-selfsigned.crt"
-  when: _certbot_result is failed
+  when:
+    - _certbot_result is failed
+    - _tls_domain is regex('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+
+- name: Generate self-signed certificate with SAN (hostname)
+  command: >
+    openssl req -x509 -nodes -days 365 -newkey rsa:4096
+    -keyout /etc/ssl/private/{{ _tls_domain }}-selfsigned.key
+    -out /etc/ssl/certs/{{ _tls_domain }}-selfsigned.crt
+    -subj "/CN={{ _tls_domain }}"
+    -addext "subjectAltName=DNS:{{ _tls_domain }}"
+  args:
+    creates: "/etc/ssl/certs/{{ _tls_domain }}-selfsigned.crt"
+  when:
+    - _certbot_result is failed
+    - _tls_domain is not regex('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
 
 - name: Set cert paths (certbot)
   set_fact:
     _ssl_cert: "/etc/letsencrypt/live/{{ _tls_domain }}/fullchain.pem"
     _ssl_key: "/etc/letsencrypt/live/{{ _tls_domain }}/privkey.pem"
+    _is_selfsigned: false
   when: _certbot_result is not failed
 
 - name: Set cert paths (self-signed)
   set_fact:
     _ssl_cert: "/etc/ssl/certs/{{ _tls_domain }}-selfsigned.crt"
     _ssl_key: "/etc/ssl/private/{{ _tls_domain }}-selfsigned.key"
+    _is_selfsigned: true
   when: _certbot_result is failed
 
-- name: Warn about self-signed certificate
+- name: LAN deployment — using self-signed certificate
   debug:
-    msg: "Using self-signed TLS cert. Point DNS to this server and run: certbot certonly --webroot -w /var/www/certbot -d {{ _tls_domain }}"
-  when: _certbot_result is failed
+    msg: "LAN deployment detected — using self-signed TLS cert for {{ _tls_domain }}"
+  when:
+    - _certbot_result is failed
+    - not (_is_public_domain | bool)
+
+- name: Certbot failed for public domain — falling back to self-signed
+  debug:
+    msg: "Certbot failed for {{ _tls_domain }} — using self-signed cert. Point DNS to this server and run: certbot certonly --webroot -w /var/www/certbot -d {{ _tls_domain }}"
+  when:
+    - _certbot_result is failed
+    - _is_public_domain | bool
 
 - name: Create Tools directory
   file:
@@ -56,4 +98,10 @@
   template:
     src: ../common/templates/setup-cert.sh.j2
     dest: /root/Tools/setup-cert.sh
+    mode: "0700"
+
+- name: Deploy Cloudflare Tunnel setup script
+  template:
+    src: ../common/templates/setup-tunnel.sh.j2
+    dest: /root/Tools/setup-tunnel.sh
     mode: "0700"

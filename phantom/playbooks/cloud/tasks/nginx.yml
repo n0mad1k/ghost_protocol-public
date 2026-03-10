@@ -42,7 +42,7 @@
     dest: /etc/nginx/sites-available/nextcloud
     content: |
       upstream php-handler {
-          server unix:/run/php/php8.2-fpm-nextcloud.sock;
+          server unix:/run/php/php{{ php_ver }}-fpm-nextcloud.sock;
       }
 
       server {
@@ -63,7 +63,11 @@
           ssl_prefer_server_ciphers on;
 
           server_tokens off;
+          {% if _is_selfsigned | default(false) | bool %}
+          add_header Strict-Transport-Security "max-age=0" always;
+          {% else %}
           add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+          {% endif %}
           add_header X-Content-Type-Options nosniff always;
           add_header X-Frame-Options SAMEORIGIN always;
           add_header X-Robots-Tag "noindex, nofollow" always;

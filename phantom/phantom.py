@@ -662,7 +662,7 @@ def gather_credentials(provider, config, service_type=None):
         config["ssh_user"] = input(f"  {CYAN}SSH user [{WHITE}root{RESET}]: ").strip() or "root"
         existing_key = input(f"  {CYAN}SSH key path (blank to generate):{RESET} ").strip()
         if existing_key:
-            config["ssh_key"] = existing_key
+            config["ssh_key"] = str(Path(existing_key).expanduser().resolve())
         if config["ssh_user"] != "root":
             import getpass
             sudo_pass = getpass.getpass(f"  {CYAN}Sudo password (blank if NOPASSWD):{RESET} ")

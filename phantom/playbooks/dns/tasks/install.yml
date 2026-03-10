@@ -12,6 +12,7 @@
       - cron
     state: present
     update_cache: true
+  when: ansible_os_family == "Debian"
 
 - name: Stop systemd-resolved (conflicts with Pi-hole on port 53)
   service:
