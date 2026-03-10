@@ -116,6 +116,28 @@
   args:
     creates: /etc/wireguard/clients/client1.conf
 
+- name: Create WireGuard systemd override directory
+  file:
+    path: /etc/systemd/system/wg-quick@wg0.service.d
+    state: directory
+    mode: "0755"
+
+- name: Deploy WireGuard systemd hardening override
+  copy:
+    dest: /etc/systemd/system/wg-quick@wg0.service.d/hardening.conf
+    content: |
+      [Service]
+      ProtectHome=true
+      ProtectClock=true
+      ProtectHostname=true
+      ProtectKernelLogs=true
+      PrivateTmp=true
+    mode: "0644"
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: true
+
 - name: Enable and start WireGuard
   systemd:
     name: wg-quick@wg0
