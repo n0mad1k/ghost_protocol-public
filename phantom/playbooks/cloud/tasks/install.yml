@@ -18,6 +18,7 @@
       - php-bcmath
       - php-gmp
       - mariadb-server
+      - python3-pymysql
       - redis-server
       - nginx
       - certbot
