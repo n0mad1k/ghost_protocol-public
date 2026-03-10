@@ -92,9 +92,44 @@ try:
 except: pass
 " 2>/dev/null || true)
 
+CREATED_NEW_TUNNEL=false
 if [ -n "${TUNNEL_ID}" ]; then
     echo "[+] Tunnel '${TUNNEL_NAME}' already exists: ${TUNNEL_ID}"
-else
+    # Check if we have valid credentials on disk
+    CRED_FILE="/etc/cloudflared/${TUNNEL_ID}.json"
+    if [ -f "${CRED_FILE}" ]; then
+        EXISTING_SECRET=$(python3 -c "
+import json, sys
+try:
+    with open('${CRED_FILE}') as f:
+        d = json.load(f)
+    s = d.get('TunnelSecret', '')
+    if s: print(s)
+except: pass
+" 2>/dev/null || true)
+        if [ -n "${EXISTING_SECRET}" ]; then
+            echo "[+] Existing credentials file is valid"
+        else
+            echo "[-] Credentials file exists but has empty secret — tunnel must be recreated"
+            echo "[*] Deleting tunnel '${TUNNEL_NAME}' to recreate with new credentials..."
+            curl -sf -X DELETE \
+                "https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}" \
+                -H "Authorization: Bearer ${CF_TOKEN}" \
+                -H "Content-Type: application/json" >/dev/null 2>&1 || true
+            TUNNEL_ID=""
+        fi
+    else
+        echo "[-] No credentials file found — tunnel must be recreated"
+        echo "[*] Deleting tunnel '${TUNNEL_NAME}' to recreate with new credentials..."
+        curl -sf -X DELETE \
+            "https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}" \
+            -H "Authorization: Bearer ${CF_TOKEN}" \
+            -H "Content-Type: application/json" >/dev/null 2>&1 || true
+        TUNNEL_ID=""
+    fi
+fi
+
+if [ -z "${TUNNEL_ID}" ]; then
     echo "[*] Creating tunnel '${TUNNEL_NAME}'..."
     TUNNEL_SECRET=$(python3 -c "import secrets, base64; print(base64.b64encode(secrets.token_bytes(32)).decode())")
 
@@ -124,20 +159,24 @@ except: pass
         exit 1
     fi
     echo "[+] Tunnel created: ${TUNNEL_ID}"
+    CREATED_NEW_TUNNEL=true
 fi
 
 # ── Write credentials + config ────────────────────────────────────────
 echo "[*] Writing tunnel configuration..."
 mkdir -p /etc/cloudflared
 
-# Write credentials file — required by cloudflared service install
-python3 -c "
+# Write credentials file only for newly created tunnels
+if [ "${CREATED_NEW_TUNNEL}" = true ]; then
+    python3 -c "
 import json
-creds = {'AccountTag': '${ACCOUNT_ID}', 'TunnelID': '${TUNNEL_ID}', 'TunnelSecret': '${TUNNEL_SECRET:-}'}
+creds = {'AccountTag': '${ACCOUNT_ID}', 'TunnelID': '${TUNNEL_ID}', 'TunnelSecret': '${TUNNEL_SECRET}'}
 with open('/etc/cloudflared/${TUNNEL_ID}.json', 'w') as f:
     json.dump(creds, f)
 "
-chmod 600 "/etc/cloudflared/${TUNNEL_ID}.json"
+    chmod 600 "/etc/cloudflared/${TUNNEL_ID}.json"
+    echo "[+] Credentials file written"
+fi
 
 cat > /etc/cloudflared/config.yml << CFEOF
 tunnel: ${TUNNEL_ID}
