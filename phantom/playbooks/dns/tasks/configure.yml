@@ -44,7 +44,6 @@
         - "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
         - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"
       when: pihole_blocklist == "aggressive"
-      notify: update gravity
 
     - name: Update gravity after blocklist changes
       command: pihole -g
