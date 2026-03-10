@@ -124,13 +124,14 @@
 
 - name: Configure Redis caching
   become_user: www-data
-  command: "php /var/www/nextcloud/occ config:system:set {{ item.key }} --value={{ item.value }} {{ item.type | default('') }}"
+  command:
+    argv: "{{ ['php', '/var/www/nextcloud/occ', 'config:system:set'] + item.key.split() + ['--value=' + item.value] + (item.extra | default([])) }}"
   loop:
     - { key: "memcache.local", value: "\\OC\\Memcache\\APCu" }
     - { key: "memcache.distributed", value: "\\OC\\Memcache\\Redis" }
     - { key: "memcache.locking", value: "\\OC\\Memcache\\Redis" }
     - { key: "redis host", value: "localhost" }
-    - { key: "redis port", value: "6379", type: "--type=integer" }
+    - { key: "redis port", value: "6379", extra: ["--type=integer"] }
   changed_when: true
 
 - name: Set default phone region

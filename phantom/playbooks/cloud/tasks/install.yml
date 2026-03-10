@@ -51,6 +51,11 @@
     state: started
     enabled: true
 
+- name: Enable APCu for PHP CLI
+  shell: phpenmod apcu
+  changed_when: true
+  ignore_errors: true
+
 - name: Enable and start PHP-FPM
   service:
     name: "php{{ php_ver }}-fpm"
