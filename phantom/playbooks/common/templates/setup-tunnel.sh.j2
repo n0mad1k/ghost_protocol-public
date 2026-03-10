@@ -254,33 +254,56 @@ except: pass
     fi
 fi
 
+# ── Create service account ───────────────────────────────────────────
+if id cloudflared &>/dev/null; then
+    echo "[+] cloudflared user already exists"
+else
+    echo "[*] Creating cloudflared service account..."
+    useradd --system --no-create-home --shell /usr/sbin/nologin cloudflared
+    echo "[+] cloudflared service account created"
+fi
+
+# Fix ownership on config and credentials
+chown -R cloudflared:cloudflared /etc/cloudflared
+
 # ── Install systemd service ──────────────────────────────────────────
 echo "[*] Installing cloudflared systemd service..."
 # Stop existing service if running
 systemctl stop cloudflared 2>/dev/null || true
 
-# Try cloudflared's built-in installer first
-if ! cloudflared service install 2>/dev/null; then
-    # Fallback: write unit file manually
-    if [ ! -f /etc/systemd/system/cloudflared.service ]; then
-        cat > /etc/systemd/system/cloudflared.service << SVCEOF
+# Remove any existing unit from `cloudflared service install` (runs as root)
+rm -f /etc/systemd/system/cloudflared.service 2>/dev/null || true
+
+cat > /etc/systemd/system/cloudflared.service << SVCEOF
 [Unit]
 Description=cloudflared tunnel
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=notify
-TimeoutStartSec=0
+User=cloudflared
+Group=cloudflared
 ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config.yml tunnel run
 Restart=on-failure
 RestartSec=5s
 
+# Hardening
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+ReadWritePaths=/etc/cloudflared
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictRealtime=true
+
 [Install]
 WantedBy=multi-user.target
 SVCEOF
-    fi
-fi
 
 systemctl daemon-reload
 systemctl enable cloudflared
