@@ -399,6 +399,8 @@ def save_deploy_info(config):
         print(f"  {WHITE}Password:{RESET}  {config['matrix_admin_password']}")
     if config.get("cloud_admin_user"):
         print(f"  {WHITE}Admin:{RESET}     {config['cloud_admin_user']}")
+    if config.get("cloud_admin_password"):
+        print(f"  {WHITE}Password:{RESET}  {config['cloud_admin_password']}")
     if config.get("vault_admin_token"):
         print(f"  {WHITE}Token:{RESET}     {config['vault_admin_token']}")
     print(f"\n  {CYAN}Credentials saved to:{RESET} {info_file}")
@@ -444,6 +446,8 @@ def _write_info_file(info_file, config, deployment_id, label, target, ssh_key,
             f.write(f"Matrix Password: {config['matrix_admin_password']}\n")
         if config.get("cloud_admin_user"):
             f.write(f"Nextcloud Admin: {config['cloud_admin_user']}\n")
+        if config.get("cloud_admin_password"):
+            f.write(f"Nextcloud Password: {config['cloud_admin_password']}\n")
         if config.get("vault_admin_token"):
             f.write(f"Vaultwarden Token: {config['vault_admin_token']}\n")
         if config.get("email_first_user"):

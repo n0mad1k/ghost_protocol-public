@@ -42,25 +42,13 @@
     state: present
     login_unix_socket: /var/run/mysqld/mysqld.sock
 
-- name: Generate admin password
-  command: openssl rand -base64 16
-  register: nc_admin_password_gen
-  args:
-    creates: /var/www/nextcloud/.admin_password
-
 - name: Save admin password
   copy:
-    content: "{{ nc_admin_password_gen.stdout }}"
+    content: "{{ cloud_admin_password }}"
     dest: /var/www/nextcloud/.admin_password
     owner: www-data
     group: www-data
     mode: "0600"
-  when: nc_admin_password_gen.changed
-
-- name: Read saved admin password
-  slurp:
-    src: /var/www/nextcloud/.admin_password
-  register: nc_admin_password_file
 
 - name: Configure PHP-FPM pool for Nextcloud
   copy:
@@ -107,7 +95,7 @@
     --database-user nextcloud
     --database-pass "{{ nc_db_pass }}"
     --admin-user "{{ nextcloud_admin }}"
-    --admin-pass "{{ (nc_admin_password_file.content | b64decode).strip() }}"
+    --admin-pass "{{ cloud_admin_password }}"
     --data-dir /var/www/nextcloud/data
   args:
     creates: /var/www/nextcloud/config/config.php

@@ -1,5 +1,8 @@
 """Nextcloud deployment module — PHP-FPM + MariaDB + Redis + nginx."""
 
+import getpass
+import secrets
+
 CYAN = "\033[38;5;51m"
 WHITE = "\033[38;5;255m"
 GREY = "\033[38;5;244m"
@@ -18,6 +21,10 @@ def gather_config(config):
     config["cloud_admin_user"] = input(
         f"  {CYAN}│{RESET}  Admin username [{WHITE}admin{RESET}]: "
     ).strip() or "admin"
+
+    config["cloud_admin_password"] = getpass.getpass(
+        f"  {CYAN}│{RESET}  Admin password (blank=generate): "
+    ) or secrets.token_urlsafe(20)
 
     config["cloud_storage_gb"] = input(
         f"  {CYAN}│{RESET}  Storage quota per user (GB) [{WHITE}10{RESET}]: "
