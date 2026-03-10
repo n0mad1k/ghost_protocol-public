@@ -4,19 +4,19 @@
 - name: Install Nextcloud dependencies
   apt:
     name:
-      - php8.2-fpm
-      - php8.2-xml
-      - php8.2-mbstring
-      - php8.2-gd
-      - php8.2-curl
-      - php8.2-zip
-      - php8.2-intl
-      - php8.2-mysql
-      - php8.2-redis
-      - php8.2-apcu
-      - php8.2-imagick
-      - php8.2-bcmath
-      - php8.2-gmp
+      - php-fpm
+      - php-xml
+      - php-mbstring
+      - php-gd
+      - php-curl
+      - php-zip
+      - php-intl
+      - php-mysql
+      - php-redis
+      - php-apcu
+      - php-imagick
+      - php-bcmath
+      - php-gmp
       - mariadb-server
       - redis-server
       - nginx
@@ -27,6 +27,16 @@
       - ca-certificates
     state: present
     update_cache: true
+  when: ansible_os_family == "Debian"
+
+- name: Detect installed PHP version
+  command: php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;'
+  register: _php_ver_result
+  changed_when: false
+
+- name: Set PHP version fact
+  set_fact:
+    php_ver: "{{ _php_ver_result.stdout }}"
 
 - name: Enable and start MariaDB
   service:
@@ -42,7 +52,7 @@
 
 - name: Enable and start PHP-FPM
   service:
-    name: php8.2-fpm
+    name: "php{{ php_ver }}-fpm"
     state: started
     enabled: true
 

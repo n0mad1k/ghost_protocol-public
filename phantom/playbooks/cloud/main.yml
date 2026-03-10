@@ -28,7 +28,7 @@
 
     - name: restart php-fpm
       service:
-        name: php8.2-fpm
+        name: "php{{ php_ver }}-fpm"
         state: restarted
 
     - name: restart mariadb

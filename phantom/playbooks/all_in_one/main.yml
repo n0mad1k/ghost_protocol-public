@@ -25,6 +25,7 @@
           - certbot
           - python3-certbot-nginx
         state: present
+      when: ansible_os_family == "Debian"
 
     - name: Remove default nginx site
       file:
@@ -133,7 +134,7 @@
 
     - name: restart php-fpm
       service:
-        name: php8.2-fpm
+        name: "php{{ php_ver | default('8.2') }}-fpm"
         state: restarted
 
     - name: restart mariadb

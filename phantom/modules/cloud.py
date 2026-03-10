@@ -12,7 +12,7 @@ def gather_config(config):
     print(f"  {CYAN}│{RESET}  {GREY}PHP-FPM + MariaDB + Redis + nginx{RESET}")
 
     config["domain"] = config.get("domain") or input(
-        f"  {CYAN}│{RESET}  Domain (e.g. cloud.example.com): "
+        f"  {CYAN}│{RESET}  Domain or IP (e.g. cloud.example.com or 192.168.1.100): "
     ).strip()
 
     config["cloud_admin_user"] = input(

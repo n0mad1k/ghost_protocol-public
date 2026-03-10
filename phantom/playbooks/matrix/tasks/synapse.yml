@@ -16,6 +16,7 @@
       - gnupg
       - lsb-release
     state: present
+  when: ansible_os_family == "Debian"
 
 - name: Add Matrix Synapse GPG key and repository
   shell: |

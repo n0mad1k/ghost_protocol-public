@@ -64,12 +64,12 @@
 
 - name: Configure PHP-FPM pool for Nextcloud
   copy:
-    dest: /etc/php/8.2/fpm/pool.d/nextcloud.conf
+    dest: "/etc/php/{{ php_ver }}/fpm/pool.d/nextcloud.conf"
     content: |
       [nextcloud]
       user = www-data
       group = www-data
-      listen = /run/php/php8.2-fpm-nextcloud.sock
+      listen = /run/php/php{{ php_ver }}-fpm-nextcloud.sock
       listen.owner = www-data
       listen.group = www-data
       pm = dynamic

@@ -12,6 +12,7 @@
       - python3-certbot-nginx
     state: present
     update_cache: true
+  when: ansible_os_family == "Debian"
 
 - name: Add Jellyfin GPG signing key
   ansible.builtin.get_url:
@@ -30,6 +31,7 @@
     name: jellyfin
     state: present
     update_cache: true
+  when: ansible_os_family == "Debian"
 
 - name: Allow HTTP/HTTPS through UFW
   ufw:

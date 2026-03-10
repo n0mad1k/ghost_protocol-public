@@ -4,12 +4,17 @@ Composes multiple services onto a single server with nginx reverse proxy
 and TLS via Certbot. Includes clear warnings about single-server risks.
 """
 
+import re
+
 CYAN = "\033[38;5;51m"
 WHITE = "\033[38;5;255m"
 GREY = "\033[38;5;244m"
 YELLOW = "\033[38;5;214m"
 RED = "\033[38;5;196m"
 RESET = "\033[0m"
+
+_IP_RE = re.compile(r'^\d+\.\d+\.\d+\.\d+$')
+_LOCAL_RE = re.compile(r'\.(local|lan|home|internal|test)$')
 
 SERVICES = [
     ("matrix", "Matrix + Element", "Encrypted messaging"),
@@ -69,37 +74,54 @@ def gather_config(config):
     config["services"] = selected_services
     config["all_in_one"] = True
 
-    # Base domain for nginx vhosts
+    # Base domain or IP for nginx vhosts
     config["domain"] = input(
-        f"\n  {CYAN}Base domain (e.g. example.com):{RESET} "
+        f"\n  {CYAN}Base domain or IP (e.g. example.com or 192.168.1.100):{RESET} "
     ).strip()
     if not config["domain"]:
-        print(f"  {RED}Domain is required for reverse proxy.{RESET}")
+        print(f"  {RED}Domain or IP is required for reverse proxy.{RESET}")
         return None
 
-    config["certbot_email"] = input(
-        f"  {CYAN}Email for Let's Encrypt [{GREY}optional{RESET}]: "
-    ).strip()
+    base_domain = config["domain"]
+    is_ip = bool(_IP_RE.match(base_domain))
+    is_local = bool(_LOCAL_RE.search(base_domain))
+
+    if is_ip:
+        # Warn about multiple web services on a single IP
+        web_services = [s for s in selected_services if s not in ("vpn", "dns")]
+        if len(web_services) > 1:
+            print(f"\n  {YELLOW}WARNING: Multiple web services on a single IP.{RESET}")
+            print(f"  {YELLOW}Only the last nginx config on port 443 wins.{RESET}")
+            print(f"  {YELLOW}Consider using different ports or a reverse proxy with path-based routing.{RESET}")
+
+    # Skip certbot email for IPs / .local domains
+    if is_ip or is_local:
+        config["certbot_email"] = ""
+    else:
+        config["certbot_email"] = input(
+            f"  {CYAN}Email for Let's Encrypt [{GREY}optional{RESET}]: "
+        ).strip()
 
     # Gather per-service configs
-    # Save base domain — each service stores config under its own prefixed keys
-    base_domain = config["domain"]
     for svc in selected_services:
         try:
             mod = __import__(f"modules.{svc}", fromlist=[svc])
             if hasattr(mod, "gather_config"):
-                # Set per-service subdomain default
-                svc_subdomains = {
-                    "matrix": f"matrix.{base_domain}",
-                    "cloud": f"cloud.{base_domain}",
-                    "vault": f"vault.{base_domain}",
-                    "media": f"media.{base_domain}",
-                    "email": f"mail.{base_domain}",
-                    "dns": f"dns.{base_domain}",
-                    "vpn": base_domain,
-                }
-                if svc in svc_subdomains:
-                    config["domain"] = svc_subdomains[svc]
+                # Set per-service domain: use same IP for all when base is IP
+                if is_ip:
+                    config["domain"] = base_domain
+                else:
+                    svc_subdomains = {
+                        "matrix": f"matrix.{base_domain}",
+                        "cloud": f"cloud.{base_domain}",
+                        "vault": f"vault.{base_domain}",
+                        "media": f"media.{base_domain}",
+                        "email": f"mail.{base_domain}",
+                        "dns": f"dns.{base_domain}",
+                        "vpn": base_domain,
+                    }
+                    if svc in svc_subdomains:
+                        config["domain"] = svc_subdomains[svc]
                 config = mod.gather_config(config)
                 if config is None:
                     return None

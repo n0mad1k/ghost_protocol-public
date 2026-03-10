@@ -12,7 +12,7 @@ def gather_config(config):
     print(f"  {CYAN}│{RESET}  {GREY}Official apt repo + nginx reverse proxy{RESET}")
 
     config["domain"] = config.get("domain") or input(
-        f"  {CYAN}│{RESET}  Domain (e.g. media.example.com): "
+        f"  {CYAN}│{RESET}  Domain or IP (e.g. media.example.com or 192.168.1.100): "
     ).strip()
 
     config["media_library_path"] = input(
