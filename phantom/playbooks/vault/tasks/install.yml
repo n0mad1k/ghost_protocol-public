@@ -10,6 +10,7 @@
       - curl
       - ca-certificates
       - gnupg
+      - argon2
     state: present
     update_cache: true
   when: ansible_os_family == "Debian"
@@ -50,6 +51,14 @@
     state: directory
     mode: "0750"
 
+- name: Generate Argon2id hash of admin token
+  shell: >
+    echo -n "{{ vaultwarden_admin_token }}" |
+    argon2 "$(openssl rand -base64 32)" -e -id -k 65540 -t 3 -p 4
+  register: vw_hashed_token
+  changed_when: false
+  no_log: true
+
 - name: Run Vaultwarden container
   command: >
     docker run -d
@@ -59,7 +68,7 @@
     -p 127.0.0.1:8081:80
     -e DOMAIN=https://{{ vaultwarden_domain }}
     -e SIGNUPS_ALLOWED={{ vaultwarden_signups | lower }}
-    -e ADMIN_TOKEN={{ vaultwarden_admin_token }}
+    -e ADMIN_TOKEN={{ vw_hashed_token.stdout | trim }}
     -e LOG_FILE=/data/vaultwarden.log
     -e LOG_LEVEL=warn
     -e SENDS_ALLOWED=true

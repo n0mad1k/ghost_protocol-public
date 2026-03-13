@@ -10,6 +10,21 @@
     ssh_allow_password: false
 
   tasks:
+    # ─── Time Synchronization ─────────────────────────────────────────
+    - name: Enable NTP via timedatectl (pre-installed, no apt needed)
+      command: timedatectl set-ntp true
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for NTP synchronization
+      command: timedatectl show --property=NTPSynchronized --value
+      register: _ntp_sync
+      until: _ntp_sync.stdout == 'yes'
+      retries: 6
+      delay: 5
+      failed_when: false
+      changed_when: false
+
     # ─── System Updates ─────────────────────────────────────────────────
     - name: Update apt cache
       apt:
@@ -31,7 +46,29 @@
           - wget
           - gnupg
           - ca-certificates
+          - chrony
         state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Enable chrony for ongoing time sync
+      service:
+        name: chrony
+        state: started
+        enabled: true
+      when: ansible_os_family == "Debian"
+
+    - name: Force NTP sync via chrony
+      command: chronyc makestep 1 1
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == "Debian"
+
+    - name: Disable systemd-timesyncd to avoid NTP client conflict
+      service:
+        name: systemd-timesyncd
+        state: stopped
+        enabled: false
+      failed_when: false
       when: ansible_os_family == "Debian"
 
     - name: Install optional hardening packages
