@@ -19,6 +19,10 @@
     - name: Include Synapse installation tasks
       include_tasks: tasks/synapse.yml
 
+    - name: Configure Cloudflare Tunnel
+      include_tasks: ../common/tasks/cloudflare_tunnel.yml
+      when: cf_tunnel_token is defined and cf_tunnel_token != ""
+
     - name: Include Element Web tasks
       include_tasks: tasks/element.yml
       when: element_enabled | bool

@@ -1,0 +1,85 @@
+---
+# Phantom — Deploy maintenance routine to server
+# Included from post_deploy.yml after all services are configured.
+
+- name: Create maintenance directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0750"
+    owner: root
+    group: root
+  loop:
+    - /opt/phantom-maint
+    - /opt/phantom-maint/docker-args
+
+- name: Deploy maintenance script
+  template:
+    src: templates/phantom-maint.sh.j2
+    dest: /opt/phantom-maint/maint.sh
+    mode: "0750"
+    owner: root
+    group: root
+
+- name: Deploy maintenance config
+  template:
+    src: templates/phantom-maint.conf.j2
+    dest: /opt/phantom-maint/config
+    mode: "0600"
+    owner: root
+    group: root
+
+- name: Install msmtp for email reports
+  apt:
+    name:
+      - msmtp
+      - msmtp-mta
+    state: present
+  when:
+    - smtp_host is defined
+    - smtp_host != ''
+  ignore_errors: true
+
+- name: Configure msmtp
+  copy:
+    dest: /etc/msmtprc
+    mode: "0600"
+    owner: root
+    group: root
+    content: |
+      account default
+      host {{ smtp_host }}
+      port {{ smtp_port | default('587') }}
+      auth on
+      user {{ smtp_user | default('') }}
+      password {{ smtp_password | default('') }}
+      from {{ smtp_from | default('phantom@' + (domain | default('localhost'))) }}
+      tls on
+      tls_starttls on
+      tls_certcheck off
+      logfile /var/log/msmtp.log
+  when:
+    - smtp_host is defined
+    - smtp_host != ''
+
+- name: Deploy maintenance systemd service
+  template:
+    src: templates/phantom-maint.service.j2
+    dest: /etc/systemd/system/phantom-maint.service
+    mode: "0644"
+
+- name: Deploy maintenance systemd timer
+  template:
+    src: templates/phantom-maint.timer.j2
+    dest: /etc/systemd/system/phantom-maint.timer
+    mode: "0644"
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: true
+
+- name: Enable and start maintenance timer
+  systemd:
+    name: phantom-maint.timer
+    enabled: true
+    state: started

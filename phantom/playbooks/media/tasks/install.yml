@@ -1,6 +1,14 @@
 ---
 # Jellyfin installation from official apt repository
 
+- name: Wait for apt locks
+  include_tasks: ../../common/tasks/wait_for_apt.yml
+
+- name: Update apt cache
+  command: apt-get update
+  changed_when: false
+  when: ansible_os_family == "Debian"
+
 - name: Install prerequisites
   apt:
     name:
@@ -11,7 +19,6 @@
       - certbot
       - python3-certbot-nginx
     state: present
-    update_cache: true
   when: ansible_os_family == "Debian"
 
 - name: Add Jellyfin GPG signing key
@@ -26,11 +33,15 @@
     state: present
     filename: jellyfin
 
+- name: Update apt cache after adding Jellyfin repo
+  command: apt-get update
+  changed_when: false
+  when: ansible_os_family == "Debian"
+
 - name: Install Jellyfin
   apt:
     name: jellyfin
     state: present
-    update_cache: true
   when: ansible_os_family == "Debian"
 
 - name: Allow HTTP/HTTPS through UFW

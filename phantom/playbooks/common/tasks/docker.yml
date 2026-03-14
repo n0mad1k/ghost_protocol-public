@@ -1,0 +1,36 @@
+---
+# Shared Docker installation — included by vault, email, etc.
+
+- name: Add Docker GPG key
+  shell: |
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg \
+      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+  args:
+    creates: /etc/apt/keyrings/docker.gpg
+
+- name: Add Docker apt repository
+  copy:
+    dest: /etc/apt/sources.list.d/docker.list
+    content: "deb [arch={{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
+    mode: "0644"
+
+- name: Update apt cache after adding Docker repo
+  command: apt-get update
+  changed_when: true
+
+- name: Install Docker
+  apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+
+- name: Enable and start Docker
+  service:
+    name: docker
+    state: started
+    enabled: true

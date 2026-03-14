@@ -1,72 +1,103 @@
 ---
-# Pi-hole native installation (no Docker)
+# AdGuard Home installation (native binary)
 
-- name: Install Pi-hole prerequisites
+- name: Wait for apt locks
+  include_tasks: ../../common/tasks/wait_for_apt.yml
+
+- name: Update apt cache
+  command: apt-get update
+  changed_when: false
+  when: ansible_os_family == "Debian"
+
+- name: Install prerequisites
   apt:
     name:
       - curl
-      - git
-      - iproute2
-      - whiptail
       - ca-certificates
-      - cron
+      - nginx
+      - certbot
+      - python3-certbot-nginx
+      - fail2ban
+      - python3-passlib
     state: present
-    update_cache: true
   when: ansible_os_family == "Debian"
 
-- name: Stop systemd-resolved (conflicts with Pi-hole on port 53)
+- name: Stop systemd-resolved (conflicts with AdGuard Home on port 53)
   service:
     name: systemd-resolved
     state: stopped
     enabled: false
   failed_when: false
 
-- name: Set DNS fallback for installation
+- name: Configure /etc/resolv.conf for local DNS
   copy:
     dest: /etc/resolv.conf
     content: |
+      nameserver 127.0.0.1
       nameserver 9.9.9.9
       nameserver 1.1.1.1
     mode: "0644"
 
-- name: Create Pi-hole config directory
+- name: Create AdGuard Home directory
   file:
-    path: /etc/pihole
+    path: /opt/AdGuardHome
     state: directory
     mode: "0755"
 
-- name: Deploy setupVars.conf for unattended install
-  copy:
-    dest: /etc/pihole/setupVars.conf
-    content: |
-      PIHOLE_INTERFACE={{ ansible_default_ipv4.interface | default('eth0') }}
-      PIHOLE_DNS_1={{ pihole_upstream.split(';')[0] | default('9.9.9.9') }}
-      PIHOLE_DNS_2={{ pihole_upstream.split(';')[1] | default('149.112.112.112') }}
-      QUERY_LOGGING=false
-      INSTALL_WEB_SERVER=true
-      INSTALL_WEB_INTERFACE=true
-      LIGHTTPD_ENABLED=false
-      CACHE_SIZE=10000
-      DNS_FQDN_REQUIRED=true
-      DNS_BOGUS_PRIV=true
-      DNSSEC=true
-      BLOCKING_ENABLED=true
-      WEBPASSWORD=
+- name: Detect system architecture
+  set_fact:
+    adguard_arch: "{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' if ansible_architecture == 'aarch64' else 'armv7' }}"
+
+- name: Download AdGuard Home
+  get_url:
+    url: "https://static.adtidy.org/adguardhome/release/AdGuardHome_linux_{{ adguard_arch }}.tar.gz"
+    dest: /tmp/AdGuardHome.tar.gz
     mode: "0644"
+  when: not ansible_check_mode
 
-- name: Clone Pi-hole repository
-  git:
-    repo: https://github.com/pi-hole/pi-hole.git
-    dest: /opt/pihole-install
-    version: master
-    depth: 1
+- name: Extract AdGuard Home binary
+  unarchive:
+    src: /tmp/AdGuardHome.tar.gz
+    dest: /opt/
+    remote_src: true
+    creates: /opt/AdGuardHome/AdGuardHome
 
-- name: Run Pi-hole installer (unattended)
-  command: bash /opt/pihole-install/automated\ install/basic-install.sh --unattended
-  args:
-    creates: /usr/local/bin/pihole
-  environment:
-    PIHOLE_SKIP_OS_CHECK: "true"
+- name: Set binary permissions
+  file:
+    path: /opt/AdGuardHome/AdGuardHome
+    mode: "0755"
+
+- name: Create AdGuard Home systemd service
+  copy:
+    dest: /etc/systemd/system/AdGuardHome.service
+    content: |
+      [Unit]
+      Description=AdGuard Home: Network-level blocker
+      After=syslog.target network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      WorkingDirectory=/opt/AdGuardHome
+      ExecStart=/opt/AdGuardHome/AdGuardHome -c /opt/AdGuardHome/AdGuardHome.yaml -w /opt/AdGuardHome --no-check-update
+      Restart=on-failure
+      RestartSec=10
+      LimitNOFILE=65535
+      AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW
+
+      [Install]
+      WantedBy=multi-user.target
+    mode: "0644"
+  notify: restart adguardhome
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: true
+
+- name: Clean up downloaded archive
+  file:
+    path: /tmp/AdGuardHome.tar.gz
+    state: absent
 
 - name: Allow DNS through UFW
   ufw:
@@ -77,13 +108,23 @@
     - { port: "53", proto: "tcp" }
     - { port: "53", proto: "udp" }
 
-- name: Allow Pi-hole admin from private networks only
+- name: Allow HTTP/HTTPS through UFW
   ufw:
     rule: allow
-    port: "80"
+    port: "{{ item }}"
     proto: tcp
-    from_ip: "{{ item }}"
   loop:
-    - "10.0.0.0/8"
-    - "172.16.0.0/12"
-    - "192.168.0.0/16"
+    - "80"
+    - "443"
+
+- name: Allow DNS-over-TLS through UFW
+  ufw:
+    rule: allow
+    port: "853"
+    proto: tcp
+
+- name: Allow AdGuard Home initial setup UI
+  ufw:
+    rule: allow
+    port: "3000"
+    proto: tcp

@@ -1,0 +1,14 @@
+# Phantom Maintenance Configuration
+# Deployed by phantom — do not edit manually
+SERVICE_TYPE="{{ server_type }}"
+DOMAIN="{{ domain | default('') }}"
+GIT_PLATFORM="{{ git_platform | default('') }}"
+SERVICES="{{ services | default('') }}"
+{% if smtp_host is defined and smtp_host != '' %}
+SMTP_HOST="{{ smtp_host }}"
+SMTP_PORT="{{ smtp_port | default('587') }}"
+SMTP_USER="{{ smtp_user | default('') }}"
+SMTP_PASSWORD="{{ smtp_password | default('') }}"
+SMTP_FROM="{{ smtp_from | default('') }}"
+REPORT_EMAIL="{{ report_email | default('') }}"
+{% endif %}

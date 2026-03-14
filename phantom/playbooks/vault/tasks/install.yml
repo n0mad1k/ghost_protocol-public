@@ -1,6 +1,14 @@
 ---
 # Vaultwarden installation via Docker
 
+- name: Wait for apt locks
+  include_tasks: ../../common/tasks/wait_for_apt.yml
+
+- name: Update apt cache
+  command: apt-get update
+  changed_when: false
+  when: ansible_os_family == "Debian"
+
 - name: Install prerequisites
   apt:
     name:
@@ -12,7 +20,6 @@
       - gnupg
       - argon2
     state: present
-    update_cache: true
   when: ansible_os_family == "Debian"
 
 - name: Add Docker GPG key
@@ -30,6 +37,10 @@
     content: "deb [arch={{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
     mode: "0644"
 
+- name: Update apt cache after adding Docker repo
+  command: apt-get update
+  changed_when: false
+
 - name: Install Docker
   apt:
     name:
@@ -37,7 +48,6 @@
       - docker-ce-cli
       - containerd.io
     state: present
-    update_cache: true
 
 - name: Enable and start Docker
   service:

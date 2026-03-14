@@ -1,6 +1,14 @@
 ---
 # Nextcloud package and dependency installation
 
+- name: Wait for apt locks
+  include_tasks: ../../common/tasks/wait_for_apt.yml
+
+- name: Update apt cache
+  command: apt-get update
+  changed_when: false
+  when: ansible_os_family == "Debian"
+
 - name: Install Nextcloud dependencies
   apt:
     name:
@@ -27,7 +35,6 @@
       - curl
       - ca-certificates
     state: present
-    update_cache: true
   when: ansible_os_family == "Debian"
 
 - name: Detect installed PHP version

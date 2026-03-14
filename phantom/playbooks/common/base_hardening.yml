@@ -25,11 +25,29 @@
       failed_when: false
       changed_when: false
 
+    # ─── Prevent apt-daily race conditions ─────────────────────────────
+    - name: Stop apt-daily timers to prevent race conditions
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - apt-daily.timer
+        - apt-daily-upgrade.timer
+      failed_when: false
+
+    - name: Kill any running apt-daily processes
+      command: systemd-run --wait -- systemctl stop {{ item }}
+      loop:
+        - apt-daily.service
+        - apt-daily-upgrade.service
+      failed_when: false
+      changed_when: false
+
     # ─── System Updates ─────────────────────────────────────────────────
     - name: Update apt cache
-      apt:
-        update_cache: true
-        cache_valid_time: 3600
+      command: apt-get update
+      changed_when: false
       when: ansible_os_family == "Debian"
 
     - name: Upgrade all packages
@@ -207,17 +225,6 @@
         regexp: "^#?LoginGraceTime"
         line: "LoginGraceTime 60"
       notify: restart sshd
-
-    # ─── Automatic Security Updates ─────────────────────────────────────
-    - name: Enable unattended upgrades for security
-      copy:
-        dest: /etc/apt/apt.conf.d/20auto-upgrades
-        content: |
-          APT::Periodic::Update-Package-Lists "1";
-          APT::Periodic::Unattended-Upgrade "1";
-          APT::Periodic::AutocleanInterval "7";
-        mode: "0644"
-      when: ansible_os_family == "Debian"
 
     # ─── Kernel Hardening ───────────────────────────────────────────────
     - name: Apply sysctl hardening

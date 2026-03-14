@@ -121,6 +121,27 @@
       include_tasks: "{{ playbook_dir }}/../media/tasks/nginx.yml"
       when: "'media' in selected_services"
 
+    # Git Server (Forgejo or GitLab)
+    - name: Deploy Git — Install Forgejo
+      include_tasks: "{{ playbook_dir }}/../git/tasks/install_forgejo.yml"
+      when: "'git' in selected_services and (git_platform | default('forgejo')) == 'forgejo'"
+
+    - name: Deploy Git — Install GitLab
+      include_tasks: "{{ playbook_dir }}/../git/tasks/install_gitlab.yml"
+      when: "'git' in selected_services and (git_platform | default('forgejo')) == 'gitlab'"
+
+    - name: Deploy Git — Configure Forgejo
+      include_tasks: "{{ playbook_dir }}/../git/tasks/configure_forgejo.yml"
+      when: "'git' in selected_services and (git_platform | default('forgejo')) == 'forgejo'"
+
+    - name: Deploy Git — Configure GitLab
+      include_tasks: "{{ playbook_dir }}/../git/tasks/configure_gitlab.yml"
+      when: "'git' in selected_services and (git_platform | default('forgejo')) == 'gitlab'"
+
+    - name: Deploy Git — Nginx vhost
+      include_tasks: "{{ playbook_dir }}/../git/tasks/nginx.yml"
+      when: "'git' in selected_services"
+
   handlers:
     - name: reload nginx
       service:

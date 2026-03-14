@@ -1,26 +1,29 @@
 ---
-# Mail-in-a-Box prerequisites and environment setup
+# Mailcow dockerized — prerequisites, Docker, clone, configure, start
 
-- name: Verify Ubuntu distribution
+- name: Verify Debian-family OS
   assert:
     that:
-      - ansible_distribution == "Ubuntu"
-    fail_msg: "Mail-in-a-Box requires Ubuntu. Detected: {{ ansible_distribution }}"
+      - ansible_os_family == "Debian"
+    fail_msg: "Mailcow requires Debian/Ubuntu. Detected: {{ ansible_distribution }}"
 
-- name: Stop conflicting nginx (MIAB manages its own)
+- name: Stop conflicting web servers (Mailcow brings its own nginx)
   service:
-    name: nginx
+    name: "{{ item }}"
     state: stopped
     enabled: false
+  loop:
+    - nginx
+    - apache2
   failed_when: false
 
-- name: Set system hostname for MIAB
+- name: Set system hostname
   hostname:
-    name: "{{ miab_domain }}"
+    name: "{{ mailcow_hostname }}"
 
 - name: Update /etc/hostname
   copy:
-    content: "{{ miab_domain }}\n"
+    content: "{{ mailcow_hostname }}\n"
     dest: /etc/hostname
     mode: "0644"
 
@@ -28,23 +31,14 @@
   lineinfile:
     path: /etc/hosts
     regexp: '^127\.0\.1\.1'
-    line: "127.0.1.1 {{ miab_domain }}"
+    line: "127.0.1.1 {{ mailcow_hostname }}"
 
-- name: Allow mail-related ports through UFW
-  ufw:
-    rule: allow
-    port: "{{ item.port }}"
-    proto: "{{ item.proto }}"
-  loop:
-    - { port: "25", proto: "tcp" }
-    - { port: "587", proto: "tcp" }
-    - { port: "993", proto: "tcp" }
-    - { port: "465", proto: "tcp" }
-    - { port: "80", proto: "tcp" }
-    - { port: "443", proto: "tcp" }
-    - { port: "53", proto: "tcp" }
-    - { port: "53", proto: "udp" }
-    - { port: "4190", proto: "tcp" }
+- name: Wait for apt locks
+  include_tasks: ../../common/tasks/wait_for_apt.yml
+
+- name: Update apt cache
+  command: apt-get update
+  changed_when: false
 
 - name: Install prerequisites
   apt:
@@ -52,5 +46,205 @@
       - curl
       - ca-certificates
       - git
+      - gnupg
     state: present
-    update_cache: true
+
+- name: Install Docker
+  include_tasks: ../../common/tasks/docker.yml
+
+- name: Allow mail-related ports through UFW
+  ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+  loop:
+    - { port: "25", proto: "tcp" }      # SMTP
+    - { port: "80", proto: "tcp" }      # HTTP (Let's Encrypt + redirect)
+    - { port: "110", proto: "tcp" }     # POP3
+    - { port: "143", proto: "tcp" }     # IMAP
+    - { port: "443", proto: "tcp" }     # HTTPS
+    - { port: "465", proto: "tcp" }     # SMTPS
+    - { port: "587", proto: "tcp" }     # Submission
+    - { port: "993", proto: "tcp" }     # IMAPS
+    - { port: "995", proto: "tcp" }     # POP3S
+    - { port: "4190", proto: "tcp" }    # Sieve
+
+- name: Clone mailcow-dockerized
+  git:
+    repo: https://github.com/mailcow/mailcow-dockerized.git
+    dest: /opt/mailcow-dockerized
+    version: master
+    depth: 1
+    force: true
+
+- name: Generate Mailcow DB password
+  shell: LC_ALL=C tr -dc A-Za-z0-9 < /dev/urandom | head -c 32
+  register: _mailcow_db_pass
+  args:
+    creates: /root/.mailcow_db_password
+
+- name: Save DB password
+  copy:
+    content: "{{ _mailcow_db_pass.stdout }}"
+    dest: /root/.mailcow_db_password
+    mode: "0600"
+  when: _mailcow_db_pass.changed
+
+- name: Read DB password
+  slurp:
+    src: /root/.mailcow_db_password
+  register: _mailcow_db_pass_file
+
+- name: Generate Mailcow DB root password
+  shell: LC_ALL=C tr -dc A-Za-z0-9 < /dev/urandom | head -c 32
+  register: _mailcow_db_root_pass
+  args:
+    creates: /root/.mailcow_db_root_password
+
+- name: Save DB root password
+  copy:
+    content: "{{ _mailcow_db_root_pass.stdout }}"
+    dest: /root/.mailcow_db_root_password
+    mode: "0600"
+  when: _mailcow_db_root_pass.changed
+
+- name: Read DB root password
+  slurp:
+    src: /root/.mailcow_db_root_password
+  register: _mailcow_db_root_pass_file
+
+- name: Generate API key
+  command: openssl rand -hex 32
+  register: _mailcow_api_key
+  args:
+    creates: /root/.mailcow_api_key
+
+- name: Save API key
+  copy:
+    content: "{{ _mailcow_api_key.stdout }}"
+    dest: /root/.mailcow_api_key
+    mode: "0600"
+  when: _mailcow_api_key.changed
+
+- name: Read API key
+  slurp:
+    src: /root/.mailcow_api_key
+  register: _mailcow_api_key_file
+
+- name: Generate Redis password
+  shell: LC_ALL=C tr -dc A-Za-z0-9 < /dev/urandom | head -c 28
+  register: _mailcow_redis_pass
+  args:
+    creates: /root/.mailcow_redis_password
+
+- name: Save Redis password
+  copy:
+    content: "{{ _mailcow_redis_pass.stdout }}"
+    dest: /root/.mailcow_redis_password
+    mode: "0600"
+  when: _mailcow_redis_pass.changed
+
+- name: Read Redis password
+  slurp:
+    src: /root/.mailcow_redis_password
+  register: _mailcow_redis_pass_file
+
+- name: Template mailcow.conf (skip generate_config.sh — it hangs Ansible)
+  template:
+    src: ../templates/mailcow.conf.j2
+    dest: /opt/mailcow-dockerized/mailcow.conf
+    mode: "0600"
+  vars:
+    mailcow_db_password: "{{ (_mailcow_db_pass_file.content | b64decode).strip() }}"
+    mailcow_db_root_password: "{{ (_mailcow_db_root_pass_file.content | b64decode).strip() }}"
+    mailcow_api_key: "{{ (_mailcow_api_key_file.content | b64decode).strip() }}"
+    mailcow_redis_password: "{{ (_mailcow_redis_pass_file.content | b64decode).strip() }}"
+
+- name: Fix Unbound config — use forwarding to avoid DNSSEC trust anchor hang
+  copy:
+    dest: /opt/mailcow-dockerized/data/conf/unbound/unbound.conf
+    mode: "0644"
+    content: |
+      server:
+        verbosity: 1
+        interface: 0.0.0.0
+        interface: ::0
+        logfile: /dev/console
+        do-ip4: yes
+        do-ip6: yes
+        do-udp: yes
+        do-tcp: yes
+        do-daemonize: no
+        access-control: 10.0.0.0/8 allow
+        access-control: 172.16.0.0/12 allow
+        access-control: 192.168.0.0/16 allow
+        access-control: fc00::/7 allow
+        access-control: fe80::/10 allow
+        directory: "/etc/unbound"
+        username: unbound
+        cache-min-ttl: 5
+        cache-max-negative-ttl: 60
+        hide-identity: yes
+        hide-version: yes
+        max-udp-size: 4096
+        msg-buffer-size: 65552
+        unwanted-reply-threshold: 10000
+        ipsecmod-enabled: no
+
+      forward-zone:
+        name: "."
+        forward-addr: 1.1.1.1
+        forward-addr: 9.9.9.9
+        forward-addr: 8.8.8.8
+
+      remote-control:
+        control-enable: yes
+        control-interface: 127.0.0.1
+        control-port: 8953
+        server-key-file: "/etc/unbound/unbound_server.key"
+        server-cert-file: "/etc/unbound/unbound_server.pem"
+        control-key-file: "/etc/unbound/unbound_control.key"
+        control-cert-file: "/etc/unbound/unbound_control.pem"
+
+- name: Pull Mailcow images
+  command: docker compose pull
+  args:
+    chdir: /opt/mailcow-dockerized
+  timeout: 600
+
+- name: Start Mailcow stack
+  block:
+    - name: Compose up
+      command: docker compose up -d
+      args:
+        chdir: /opt/mailcow-dockerized
+      timeout: 300
+  rescue:
+    - name: Kill stuck unbound-anchor process (entrypoint hangs on DNSSEC bootstrap)
+      command: docker exec mailcowdockerized-unbound-mailcow-1 pkill -f unbound-anchor
+      failed_when: false
+
+    - name: Wait for unbound to start after anchor kill
+      pause:
+        seconds: 15
+
+    - name: Verify unbound is running
+      command: docker exec mailcowdockerized-unbound-mailcow-1 unbound-control status
+      register: _unbound_status
+      retries: 6
+      delay: 10
+      until: _unbound_status.rc == 0
+      failed_when: false
+
+    - name: Compose up (retry after unbound fix)
+      command: docker compose up -d
+      args:
+        chdir: /opt/mailcow-dockerized
+      timeout: 300
+
+- name: Wait for Mailcow HTTPS (port 443)
+  wait_for:
+    port: 443
+    host: 0.0.0.0
+    delay: 30
+    timeout: 300

@@ -210,7 +210,7 @@ def _migrate_ssh_keys():
 
 # ─── SSH Key Generation ─────────────────────────────────────────────────────
 
-def generate_ssh_key(deployment_id):
+def generate_ssh_key(deployment_id, comment=None):
     """Generate an RSA 4096 SSH keypair at ~/.ssh/c2deploy_ph-{id}."""
     SSH_DIR.mkdir(mode=0o700, exist_ok=True)
     key_path = _ssh_key_path(deployment_id)
@@ -219,10 +219,13 @@ def generate_ssh_key(deployment_id):
         info(f"SSH key already exists: {key_path}")
         return str(key_path)
 
+    if comment is None:
+        comment = f"c2deploy-ph-{deployment_id}"
+
     info(f"Generating SSH key: {key_path}")
     subprocess.run(
         ["ssh-keygen", "-t", "rsa", "-b", "4096", "-f", str(key_path),
-         "-N", "", "-C", f"c2deploy-ph-{deployment_id}"],
+         "-N", "", "-C", comment],
         check=True, capture_output=True,
     )
     os.chmod(key_path, 0o600)
@@ -234,6 +237,23 @@ def generate_ssh_key(deployment_id):
 
 # Lines to show on console during ansible streaming
 _ANSIBLE_SHOW = ("TASK [", "PLAY [", "ok:", "changed:", "failed:", "fatal:", "PLAY RECAP")
+
+
+def _redact_cmd(cmd):
+    """Redact sensitive values from ansible command for logging."""
+    _SENSITIVE_PREFIXES = ("api_token=", "relay_api_token=", "aws_secret_key=",
+                           "become_password=", "smtp_password=", "voip_sip_password=",
+                           "email_relay_password=", "email_admin_password=",
+                           "email_first_password=", "relay_psk=", "mailcow_pubkey=")
+    redacted = []
+    for part in cmd:
+        for prefix in _SENSITIVE_PREFIXES:
+            if prefix in part:
+                key = part.split("=", 1)[0]
+                part = f"{key}=REDACTED"
+                break
+        redacted.append(part)
+    return " ".join(redacted)
 
 
 def run_playbook(playbook_path, config, extra_vars=None):
@@ -259,16 +279,27 @@ def run_playbook(playbook_path, config, extra_vars=None):
     vars_file = WORK_DIR / deployment_id / "vars.yaml"
     vars_file.parent.mkdir(parents=True, exist_ok=True)
 
+    # Secrets excluded from vars.yaml (file on disk) but passed via --extra-vars
+    _exclude_from_vars = {"become_password", "voip_sip_password", "smtp_password",
+                          "relay_api_token", "email_relay_password", "email_admin_password",
+                          "email_first_password", "relay_psk"}
+    _secret_vars = {k for k in _exclude_from_vars if k != "become_password" and config.get(k)}
+    vars_config = {k: v for k, v in config.items() if k not in _exclude_from_vars}
+
     try:
         import yaml  # noqa: optional dependency
         with open(vars_file, "w") as f:
-            yaml.dump(config, f, default_flow_style=False)
+            yaml.dump(vars_config, f, default_flow_style=False)
     except ImportError:
         with open(vars_file, "w") as f:
-            for k, v in config.items():
+            for k, v in vars_config.items():
                 f.write(f"{k}: {json.dumps(v)}\n")
 
     cmd.extend(["-e", f"@{vars_file}"])
+
+    # Pass excluded secrets directly via --extra-vars (not written to disk)
+    for secret_key in _secret_vars:
+        cmd.extend(["-e", f"{secret_key}={config[secret_key]}"])
 
     if extra_vars:
         for k, v in extra_vars.items():
@@ -314,7 +345,7 @@ def run_playbook(playbook_path, config, extra_vars=None):
             lf.write(f"\n{'=' * 60}\n")
             lf.write(f"Playbook: {playbook_path}\n")
             lf.write(f"Time: {time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n")
-            lf.write(f"Command: {' '.join(cmd)}\n")
+            lf.write(f"Command: {_redact_cmd(cmd)}\n")
             lf.write(f"{'=' * 60}\n\n")
 
             proc = subprocess.Popen(
@@ -344,6 +375,65 @@ def run_playbook(playbook_path, config, extra_vars=None):
 
 
 # ─── Deployment Info Logging ────────────────────────────────────────────────
+
+def _recover_generated_creds(config):
+    """SSH to target and read back any auto-generated passwords.
+
+    Some services (e.g. Mailcow) generate passwords on the server when none
+    are provided.  This function fetches those generated values so they can
+    be included in deploy_info.json and the terminal summary.
+    """
+    target = config.get("target_host", "localhost")
+    if target == "localhost":
+        return
+
+    deployment_id = config["deployment_id"]
+    ssh_key = config.get("ssh_key", "")
+    ssh_user = config.get("ssh_user", "root")
+    known_hosts = str(_ssh_known_hosts_path(deployment_id))
+
+    ssh_base = [
+        "ssh", "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "IdentitiesOnly=yes",
+        "-o", f"UserKnownHostsFile={known_hosts}",
+        "-o", "ConnectTimeout=10",
+    ]
+    if ssh_key:
+        ssh_base.extend(["-i", ssh_key])
+    ssh_base.append(f"{ssh_user}@{target}")
+
+    server_type = config.get("server_type", "")
+
+    # Map: server_type → list of (config_key, remote_file)
+    _CRED_FILES = {
+        "email": [
+            ("email_admin_password", "/root/.mailcow_admin_password"),
+            ("email_first_password", "/root/.mailcow_user_password"),
+        ],
+    }
+
+    become_password = config.get("become_password", "")
+    need_sudo = ssh_user != "root"
+
+    for key, remote_file in _CRED_FILES.get(server_type, []):
+        if not config.get(key):
+            try:
+                if need_sudo and become_password:
+                    cmd = ssh_base + [
+                        f"echo '{become_password}' | sudo -S cat {remote_file} 2>/dev/null"
+                    ]
+                elif need_sudo:
+                    cmd = ssh_base + [f"sudo cat {remote_file}"]
+                else:
+                    cmd = ssh_base + [f"cat {remote_file}"]
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=15,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    config[key] = result.stdout.strip()
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
 
 def save_deploy_info(config):
     """Save deployment info — mode-aware output location.
@@ -379,9 +469,14 @@ def save_deploy_info(config):
     os.chmod(info_file, 0o600)
 
     # ── JSON config (local backup in work dir) ────────────────────────────
+    # Filter secrets from JSON dump (C-006)
+    _SECRETS_KEYS = {"api_token", "relay_api_token", "aws_secret_key", "become_password",
+                     "smtp_password", "voip_sip_password", "email_relay_password",
+                     "email_admin_password", "email_first_password", "relay_psk"}
     json_file = deploy_dir / "deploy_info.json"
+    safe_config = {k: v for k, v in config.items() if k not in _SECRETS_KEYS}
     with open(json_file, "w") as f:
-        json.dump(config, f, indent=2, default=str)
+        json.dump(safe_config, f, indent=2, default=str)
     os.chmod(json_file, 0o600)
 
     # ── Terminal summary ──────────────────────────────────────────────────
@@ -393,22 +488,108 @@ def save_deploy_info(config):
     if config.get("domain"):
         print(f"  {WHITE}Domain:{RESET}    {config['domain']}")
     print(f"  {WHITE}SSH:{RESET}       {ssh_cmd}")
-    if config.get("matrix_admin_user"):
-        print(f"  {WHITE}Admin:{RESET}     {config['matrix_admin_user']}")
-    if config.get("matrix_admin_password"):
-        print(f"  {WHITE}Password:{RESET}  {config['matrix_admin_password']}")
-    if config.get("cloud_admin_user"):
-        print(f"  {WHITE}Admin:{RESET}     {config['cloud_admin_user']}")
-    if config.get("cloud_admin_password"):
-        print(f"  {WHITE}Password:{RESET}  {config['cloud_admin_password']}")
-    if config.get("vault_admin_token"):
-        print(f"  {WHITE}Token:{RESET}     {config['vault_admin_token']}")
+    qs = _quick_start(config, target)
+    if qs:
+        print(f"\n  {CYAN}── Quick Start ──{RESET}")
+        for lbl, val in qs:
+            print(f"  {WHITE}{lbl}:{RESET}  {val}")
     print(f"\n  {CYAN}Credentials saved to:{RESET} {info_file}")
     if C2_INTEGRATED:
         dim("(c2itall integrated mode)")
     print(f"{CYAN}{'═' * 60}{RESET}")
 
     ok(f"Deployment info saved: {info_file}")
+
+
+def _quick_start(config, target):
+    """Return per-service Quick Start lines as list of (label, value) tuples."""
+    domain = config.get("domain", target)
+    stype = config.get("server_type", "")
+    qs = []
+    if stype == "matrix":
+        qs.append(("Web UI", f"https://{domain}"))
+        if config.get("matrix_element_web"):
+            qs.append(("Element", f"https://element.{domain}"))
+        if config.get("matrix_admin_user"):
+            qs.append(("Admin", config["matrix_admin_user"]))
+        if config.get("matrix_admin_password"):
+            qs.append(("Password", config["matrix_admin_password"]))
+        qs.append(("Next step", "Log in to Element and start messaging"))
+    elif stype == "vpn":
+        qs.append(("Port", f"{config.get('vpn_port', '51820')}/UDP"))
+        qs.append(("Clients", str(config.get("vpn_client_count", 1))))
+        qs.append(("Configs", "/etc/wireguard/client_*.conf on server"))
+        qs.append(("Next step", "SCP client configs, import into WireGuard app"))
+    elif stype == "dns":
+        if domain and domain != target:
+            qs.append(("Admin UI", f"https://{domain}"))
+        else:
+            qs.append(("Admin UI", f"http://{target}:3000"))
+        if config.get("dns_admin_user"):
+            qs.append(("Admin", config["dns_admin_user"]))
+        if config.get("dns_admin_password"):
+            qs.append(("Password", config["dns_admin_password"]))
+        qs.append(("Next step", "Point devices to this server's IP for DNS"))
+    elif stype == "cloud":
+        qs.append(("Web UI", f"https://{domain}"))
+        if config.get("cloud_admin_user"):
+            qs.append(("Admin", config["cloud_admin_user"]))
+        if config.get("cloud_admin_password"):
+            qs.append(("Password", config["cloud_admin_password"]))
+        qs.append(("Next step", "Log in, install Nextcloud desktop/mobile clients"))
+    elif stype == "vault":
+        qs.append(("Web UI", f"https://{domain}"))
+        qs.append(("Admin panel", f"https://{domain}/admin"))
+        if config.get("vault_admin_token"):
+            qs.append(("Admin token", config["vault_admin_token"]))
+        qs.append(("Signups", str(config.get("vault_signups_allowed", False))))
+        qs.append(("Next step", "Visit /admin to configure, then create account at main URL"))
+    elif stype == "media":
+        qs.append(("Web UI", f"https://{domain}"))
+        if config.get("media_library_path"):
+            qs.append(("Library", config["media_library_path"]))
+        qs.append(("Next step", "Complete setup wizard in browser, add media libraries"))
+    elif stype == "email":
+        email_host = config.get("email_hostname", domain)
+        qs.append(("Webmail", f"https://{email_host}/SOGo"))
+        qs.append(("Admin", f"https://{email_host}/admin"))
+        if config.get("email_admin_password"):
+            qs.append(("Admin pass", config["email_admin_password"]))
+        if config.get("email_first_user"):
+            qs.append(("First user", config["email_first_user"]))
+        if config.get("email_first_password"):
+            qs.append(("User pass", config["email_first_password"]))
+        if config.get("email_relay_mode") == "smarthost" and config.get("email_relay_host"):
+            qs.append(("Smarthost", f"{config['email_relay_host']}:{config.get('email_relay_port', '587')}"))
+        qs.append(("Next step", "Log into admin panel to manage domains and mailboxes"))
+        if config.get("email_relay_mode") == "vps" and config.get("relay_vps_ip"):
+            qs.append(("Relay VPS", config["relay_vps_ip"]))
+            email_host = config.get("email_hostname", domain)
+            qs.append(("IMPORTANT", f"MX and A records for {email_host} must point to {config['relay_vps_ip']}"))
+    elif stype == "git":
+        platform = config.get("git_platform", "forgejo")
+        qs.append(("Platform", platform.title()))
+        qs.append(("Web UI", f"https://{domain}"))
+        if config.get("git_admin_user"):
+            qs.append(("Admin", config["git_admin_user"]))
+        if config.get("git_admin_password"):
+            qs.append(("Password", config["git_admin_password"]))
+        if config.get("git_ssh_port"):
+            qs.append(("Git SSH", f"ssh://git@{domain}:{config['git_ssh_port']}/user/repo.git"))
+        qs.append(("Next step", "Log into web UI, create first repository"))
+    elif stype == "voip":
+        voip_host = config.get("voip_hostname", domain)
+        qs.append(("PBX Admin", f"https://{voip_host}"))
+        qs.append(("Admin user", "admin"))
+        qs.append(("Admin pass", "see /root/.izpbx_admin_password on server"))
+        if config.get("voip_provider") and config["voip_provider"] != "skip":
+            qs.append(("SIP Provider", config["voip_provider"]))
+        if config.get("voip_sip_host"):
+            qs.append(("SIP Host", f"{config['voip_sip_host']}:{config.get('voip_sip_port', '5060')}"))
+        qs.append(("Next step", "Log into FreePBX, create extensions, register SIP phones"))
+    if config.get("cf_tunnel_token"):
+        qs.append(("CF Tunnel", "configured"))
+    return qs
 
 
 def _write_info_file(info_file, config, deployment_id, label, target, ssh_key,
@@ -440,18 +621,12 @@ def _write_info_file(info_file, config, deployment_id, label, target, ssh_key,
         if ssh_key:
             f.write(f"SSH Key: {ssh_key}\n")
         f.write(f"SSH Command: {ssh_cmd}\n")
-        if config.get("matrix_admin_user"):
-            f.write(f"Matrix Admin: {config['matrix_admin_user']}\n")
-        if config.get("matrix_admin_password"):
-            f.write(f"Matrix Password: {config['matrix_admin_password']}\n")
-        if config.get("cloud_admin_user"):
-            f.write(f"Nextcloud Admin: {config['cloud_admin_user']}\n")
-        if config.get("cloud_admin_password"):
-            f.write(f"Nextcloud Password: {config['cloud_admin_password']}\n")
-        if config.get("vault_admin_token"):
-            f.write(f"Vaultwarden Token: {config['vault_admin_token']}\n")
-        if config.get("email_first_user"):
-            f.write(f"Email User: {config['email_first_user']}\n")
+        qs = _quick_start(config, target)
+        if qs:
+            f.write(f"\nQuick Start:\n")
+            f.write(f"{'-' * 30}\n")
+            for lbl, val in qs:
+                f.write(f"{lbl}: {val}\n")
         f.write(f"\nGenerated at: {config['timestamp']}\n")
 
 
@@ -579,15 +754,188 @@ SERVICE_PLANS = {
     "cloud":     {"linode": "g6-standard-1", "aws": "t3.small"},    # Nextcloud + MariaDB + Redis
     "matrix":    {"linode": "g6-standard-2", "aws": "t3.medium"},   # Synapse + Postgres + Element (memory hungry)
     "media":     {"linode": "g6-standard-1", "aws": "t3.small"},    # Jellyfin transcoding benefits from RAM
-    "email":     {"linode": "g6-standard-1", "aws": "t3.small"},    # Mail-in-a-Box full stack
+    "email":     {"linode": "g6-standard-2", "aws": "t3.medium"},   # Mailcow dockerized (needs 4GB+ RAM)
+    "git":       {"linode": "g6-nanode-1",   "aws": "t3.micro"},    # Forgejo ~200MB; GitLab needs g6-standard-2/t3.medium
+    "voip":      {"linode": "g6-standard-1", "aws": "t3.small"},   # izPBX FreePBX+Asterisk (2GB RAM sufficient)
     "all_in_one": {"linode": "g6-standard-2", "aws": "t3.medium"}, # Multiple services
 }
+
+
+# ─── .env → Config Mapping ─────────────────────────────────────────────────
+
+_ENV_CONFIG_MAP = {
+    # Provider credentials (no PHANTOM_ prefix — shared with cloud CLIs)
+    "LINODE_TOKEN": "api_token",
+    "LINODE_REGION": "region",
+    "LINODE_PLAN": "plan",
+    "AWS_ACCESS_KEY_ID": "aws_access_key",
+    "AWS_SECRET_ACCESS_KEY": "aws_secret_key",
+    "AWS_REGION": "region",
+    "AWS_INSTANCE_TYPE": "instance_type",
+    # Common — PHANTOM_ prefix (matches .env)
+    "PHANTOM_DOMAIN": "domain",
+    "PHANTOM_PROVIDER": "provider",
+    "PHANTOM_TARGET_HOST": "target_host",
+    "PHANTOM_SSH_USER": "ssh_user",
+    "PHANTOM_SSH_KEY": "ssh_key",
+    "PHANTOM_BECOME_PASSWORD": "become_password",
+    "PHANTOM_DEPLOYMENT_ID": "deployment_id",
+    # Cloudflare — accept both PHANTOM_ prefixed and bare
+    "PHANTOM_CF_TUNNEL_TOKEN": "cf_tunnel_token",
+    "CF_TUNNEL_TOKEN": "cf_tunnel_token",
+    # Matrix — accept both PHANTOM_ prefixed and bare
+    "PHANTOM_MATRIX_ADMIN_USER": "matrix_admin_user",
+    "PHANTOM_MATRIX_ADMIN_PASSWORD": "matrix_admin_password",
+    "PHANTOM_MATRIX_REGISTRATION": "matrix_registration",
+    "PHANTOM_MATRIX_ELEMENT_WEB": "matrix_element_web",
+    "MATRIX_ADMIN_USER": "matrix_admin_user",
+    "MATRIX_ADMIN_PASSWORD": "matrix_admin_password",
+    "MATRIX_REGISTRATION": "matrix_registration",
+    "MATRIX_ELEMENT_WEB": "matrix_element_web",
+    # VPN — accept both PHANTOM_ prefixed and bare
+    "PHANTOM_VPN_PORT": "vpn_port",
+    "PHANTOM_VPN_CLIENT_COUNT": "vpn_client_count",
+    "PHANTOM_VPN_DNS": "vpn_dns",
+    "PHANTOM_VPN_ALLOWED_IPS": "vpn_allowed_ips",
+    "PHANTOM_VPN_SUBNET": "vpn_subnet",
+    "VPN_PORT": "vpn_port",
+    "VPN_CLIENT_COUNT": "vpn_client_count",
+    "VPN_DNS": "vpn_dns",
+    "VPN_ALLOWED_IPS": "vpn_allowed_ips",
+    "VPN_SUBNET": "vpn_subnet",
+    # DNS — accept both PHANTOM_ prefixed and bare
+    "PHANTOM_DNS_UPSTREAM": "dns_upstream",
+    "PHANTOM_DNS_BLOCKLIST": "dns_blocklist",
+    "PHANTOM_DNS_DOMAIN": "dns_domain",
+    "PHANTOM_DNS_ADMIN_USER": "dns_admin_user",
+    "PHANTOM_DNS_ADMIN_PASSWORD": "dns_admin_password",
+    "DNS_UPSTREAM": "dns_upstream",
+    "DNS_BLOCKLIST": "dns_blocklist",
+    "DNS_DOMAIN": "dns_domain",
+    "DNS_ADMIN_USER": "dns_admin_user",
+    "DNS_ADMIN_PASSWORD": "dns_admin_password",
+    # Cloud (Nextcloud) — accept both PHANTOM_ prefixed and bare
+    "PHANTOM_CLOUD_ADMIN_USER": "cloud_admin_user",
+    "PHANTOM_CLOUD_ADMIN_PASSWORD": "cloud_admin_password",
+    "PHANTOM_CLOUD_STORAGE_GB": "cloud_storage_gb",
+    "CLOUD_ADMIN_USER": "cloud_admin_user",
+    "CLOUD_ADMIN_PASSWORD": "cloud_admin_password",
+    "CLOUD_STORAGE_GB": "cloud_storage_gb",
+    # Vault — accept both PHANTOM_ prefixed and bare
+    "PHANTOM_VAULT_ADMIN_TOKEN": "vault_admin_token",
+    "PHANTOM_VAULT_SIGNUPS_ALLOWED": "vault_signups_allowed",
+    "VAULT_ADMIN_TOKEN": "vault_admin_token",
+    "VAULT_SIGNUPS_ALLOWED": "vault_signups_allowed",
+    # Media — accept both PHANTOM_ prefixed and bare
+    "PHANTOM_MEDIA_LIBRARY_PATH": "media_library_path",
+    "MEDIA_LIBRARY_PATH": "media_library_path",
+    # Email — accept both PHANTOM_ prefixed and bare
+    "PHANTOM_EMAIL_HOSTNAME": "email_hostname",
+    "PHANTOM_EMAIL_TIMEZONE": "email_timezone",
+    "PHANTOM_EMAIL_DOMAIN": "domain",
+    "PHANTOM_EMAIL_ADMIN_PASSWORD": "email_admin_password",
+    "PHANTOM_EMAIL_FIRST_USER": "email_first_user",
+    "PHANTOM_EMAIL_FIRST_PASSWORD": "email_first_password",
+    "EMAIL_HOSTNAME": "email_hostname",
+    "EMAIL_DOMAIN": "domain",
+    "EMAIL_ADMIN_PASSWORD": "email_admin_password",
+    "EMAIL_FIRST_USER": "email_first_user",
+    "EMAIL_FIRST_PASSWORD": "email_first_password",
+    # Email relay/smarthost — accept both PHANTOM_ prefixed and bare
+    "PHANTOM_EMAIL_RELAY_HOST": "email_relay_host",
+    "PHANTOM_EMAIL_RELAY_PORT": "email_relay_port",
+    "PHANTOM_EMAIL_RELAY_USER": "email_relay_user",
+    "PHANTOM_EMAIL_RELAY_PASSWORD": "email_relay_password",
+    "EMAIL_RELAY_HOST": "email_relay_host",
+    "EMAIL_RELAY_PORT": "email_relay_port",
+    "EMAIL_RELAY_USER": "email_relay_user",
+    "EMAIL_RELAY_PASSWORD": "email_relay_password",
+    # Email relay VPS mode
+    "PHANTOM_EMAIL_RELAY_MODE": "email_relay_mode",
+    "PHANTOM_RELAY_PROVIDER": "relay_provider",
+    "PHANTOM_RELAY_API_TOKEN": "relay_api_token",
+    "PHANTOM_RELAY_REGION": "relay_region",
+    "EMAIL_RELAY_MODE": "email_relay_mode",
+    "RELAY_PROVIDER": "relay_provider",
+    "RELAY_API_TOKEN": "relay_api_token",
+    "RELAY_REGION": "relay_region",
+    # Git — accept both PHANTOM_ prefixed and bare
+    "PHANTOM_GIT_PLATFORM": "git_platform",
+    "PHANTOM_GIT_SSH_PORT": "git_ssh_port",
+    "PHANTOM_GIT_ADMIN_USER": "git_admin_user",
+    "PHANTOM_GIT_ADMIN_PASSWORD": "git_admin_password",
+    "PHANTOM_GIT_ADMIN_EMAIL": "git_admin_email",
+    "GIT_PLATFORM": "git_platform",
+    "GIT_SSH_PORT": "git_ssh_port",
+    "GIT_ADMIN_USER": "git_admin_user",
+    "GIT_ADMIN_PASSWORD": "git_admin_password",
+    "GIT_ADMIN_EMAIL": "git_admin_email",
+    # VOIP — accept both PHANTOM_ prefixed and bare
+    "PHANTOM_VOIP_HOSTNAME": "voip_hostname",
+    "PHANTOM_VOIP_ADMIN_PASSWORD": "voip_admin_password",
+    "PHANTOM_VOIP_PROVIDER": "voip_provider",
+    "PHANTOM_VOIP_SIP_HOST": "voip_sip_host",
+    "PHANTOM_VOIP_SIP_PORT": "voip_sip_port",
+    "PHANTOM_VOIP_SIP_USERNAME": "voip_sip_username",
+    "PHANTOM_VOIP_SIP_PASSWORD": "voip_sip_password",
+    "PHANTOM_VOIP_SIP_TRANSPORT": "voip_sip_transport",
+    "PHANTOM_VOIP_TIMEZONE": "voip_timezone",
+    "VOIP_HOSTNAME": "voip_hostname",
+    "VOIP_ADMIN_PASSWORD": "voip_admin_password",
+    "VOIP_PROVIDER": "voip_provider",
+    "VOIP_SIP_HOST": "voip_sip_host",
+    "VOIP_SIP_PORT": "voip_sip_port",
+    "VOIP_SIP_USERNAME": "voip_sip_username",
+    "VOIP_SIP_PASSWORD": "voip_sip_password",
+    "VOIP_SIP_TRANSPORT": "voip_sip_transport",
+    "VOIP_TIMEZONE": "voip_timezone",
+    # All-in-One
+    "PHANTOM_SERVICES": "services",
+    "PHANTOM_CERTBOT_EMAIL": "certbot_email",
+    # Maintenance Reports (SMTP)
+    "PHANTOM_SMTP_HOST": "smtp_host",
+    "PHANTOM_SMTP_PORT": "smtp_port",
+    "PHANTOM_SMTP_USER": "smtp_user",
+    "PHANTOM_SMTP_PASSWORD": "smtp_password",
+    "PHANTOM_SMTP_FROM": "smtp_from",
+    "PHANTOM_REPORT_EMAIL": "report_email",
+}
+
+_BOOL_KEYS = {"matrix_registration", "matrix_element_web", "vault_signups_allowed"}
+_INT_KEYS = {"vpn_port", "vpn_client_count", "cloud_storage_gb", "git_ssh_port"}
+
+
+def _populate_config_from_env(config):
+    """Populate config dict from environment variables via _ENV_CONFIG_MAP."""
+    _load_dotenv()
+    for env_key, config_key in _ENV_CONFIG_MAP.items():
+        val = os.environ.get(env_key, "")
+        if val and config_key not in config:
+            if config_key in _BOOL_KEYS:
+                config[config_key] = val.lower() in ("true", "yes", "1", "y")
+            elif config_key in _INT_KEYS:
+                try:
+                    config[config_key] = int(val)
+                except ValueError:
+                    config[config_key] = val
+            else:
+                config[config_key] = val
+    return config
 
 
 # ─── Provider Selection ─────────────────────────────────────────────────────
 
 def select_provider():
-    """Select deployment target: cloud provider or local/existing server."""
+    """Select deployment target: cloud provider or local/existing server.
+
+    If PHANTOM_PROVIDER is set in env/.env, auto-selects the provider.
+    """
+    _load_dotenv()
+    env_provider = os.environ.get("PHANTOM_PROVIDER", "").lower()
+    if env_provider in ("linode", "aws", "flokinet", "existing", "local"):
+        ok(f"Provider from .env: {env_provider}")
+        return env_provider
+
     print(f"\n{CYAN}  Select deployment target:{RESET}")
     print(f"  {WHITE}1{RESET}) Linode")
     print(f"  {WHITE}2{RESET}) AWS (EC2)")
@@ -608,6 +956,7 @@ def gather_credentials(provider, config, service_type=None):
     Uses per-service recommended plans when available.
     Press Enter at any prompt to accept the stored default.
     """
+    _populate_config_from_env(config)
     defaults = _load_provider_defaults()
 
     if provider == "linode":
@@ -657,17 +1006,34 @@ def gather_credentials(provider, config, service_type=None):
 
     elif provider == "flokinet":
         config["provider"] = "flokinet"
-        config["target_host"] = input(f"  {CYAN}Server IP:{RESET} ").strip()
-        config["ssh_user"] = input(f"  {CYAN}SSH user [{WHITE}root{RESET}]: ").strip() or "root"
+        if config.get("target_host"):
+            ok(f"Server IP from .env: {config['target_host']}")
+        else:
+            config["target_host"] = input(f"  {CYAN}Server IP:{RESET} ").strip()
+        if config.get("ssh_user"):
+            ok(f"SSH user from .env: {config['ssh_user']}")
+        else:
+            config["ssh_user"] = input(f"  {CYAN}SSH user [{WHITE}root{RESET}]: ").strip() or "root"
 
     elif provider == "existing":
         config["provider"] = "existing"
-        config["target_host"] = input(f"  {CYAN}Server IP/hostname:{RESET} ").strip()
-        config["ssh_user"] = input(f"  {CYAN}SSH user [{WHITE}root{RESET}]: ").strip() or "root"
-        existing_key = input(f"  {CYAN}SSH key path (blank to generate):{RESET} ").strip()
-        if existing_key:
-            config["ssh_key"] = str(Path(existing_key).expanduser().resolve())
-        if config["ssh_user"] != "root":
+        if config.get("target_host"):
+            ok(f"Server IP from .env: {config['target_host']}")
+        else:
+            config["target_host"] = input(f"  {CYAN}Server IP/hostname:{RESET} ").strip()
+        if config.get("ssh_user"):
+            ok(f"SSH user from .env: {config['ssh_user']}")
+        else:
+            config["ssh_user"] = input(f"  {CYAN}SSH user [{WHITE}root{RESET}]: ").strip() or "root"
+        if config.get("ssh_key"):
+            ok(f"SSH key from .env: {config['ssh_key']}")
+        else:
+            existing_key = input(f"  {CYAN}SSH key path (blank to generate):{RESET} ").strip()
+            if existing_key:
+                config["ssh_key"] = str(Path(existing_key).expanduser().resolve())
+        if config.get("become_password"):
+            ok("Sudo password loaded from .env")
+        elif config.get("ssh_user", "root") != "root":
             import getpass
             sudo_pass = getpass.getpass(f"  {CYAN}Sudo password (blank if NOPASSWD):{RESET} ")
             if sudo_pass:
@@ -824,6 +1190,85 @@ def _parse_deployment_info(info_file):
     return data
 
 
+def run_maintenance(dep):
+    """Run maintenance routine on a deployed server via SSH.
+
+    Checks that the maintenance script exists on the server, then runs it
+    with live output streaming. Reports success/warning/failure based on exit code.
+    """
+    dep_id = dep.get("deployment_id", "")
+    ip = dep.get("ip", "")
+    ssh_key = dep.get("ssh_key", str(_ssh_key_path(dep_id)))
+    known_hosts = str(_ssh_known_hosts_path(dep_id))
+
+    if not ip:
+        err("No IP address found for this deployment.")
+        return
+
+    # Load full config from deploy_info.json for ssh_user
+    json_file = WORK_DIR / dep_id / "deploy_info.json"
+    ssh_user = "root"
+    if json_file.exists():
+        try:
+            with open(json_file) as f:
+                full_config = json.load(f)
+            ssh_user = full_config.get("ssh_user", "root")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    ssh_base = [
+        "ssh", "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "IdentitiesOnly=yes",
+        "-o", f"UserKnownHostsFile={known_hosts}",
+        "-o", "ConnectTimeout=15",
+    ]
+    if ssh_key and Path(ssh_key).exists():
+        ssh_base.extend(["-i", ssh_key])
+    ssh_base.append(f"{ssh_user}@{ip}")
+
+    # Check if maintenance script exists on server
+    info(f"Checking maintenance script on {ip}...")
+    check_cmd = ssh_base + ["test -f /opt/phantom-maint/maint.sh && echo OK"]
+    try:
+        result = subprocess.run(check_cmd, capture_output=True, text=True, timeout=15)
+        if "OK" not in result.stdout:
+            err("Maintenance script not found at /opt/phantom-maint/maint.sh")
+            warn("This server may have been deployed before maintenance was added.")
+            warn("Re-deploy or manually copy the script to the server.")
+            return
+    except (subprocess.TimeoutExpired, OSError) as e:
+        err(f"SSH connection failed: {e}")
+        return
+
+    # Run maintenance with live output
+    info(f"Running maintenance on {ip}...")
+    print(f"{CYAN}{'─' * 60}{RESET}")
+
+    run_cmd = ssh_base + ["sudo /opt/phantom-maint/maint.sh"]
+    try:
+        proc = subprocess.Popen(
+            run_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        for line in proc.stdout:
+            print(f"  {GREY}{line.rstrip()}{RESET}")
+        proc.wait()
+
+        print(f"{CYAN}{'─' * 60}{RESET}")
+        if proc.returncode == 0:
+            ok("Maintenance completed successfully.")
+        elif proc.returncode == 1:
+            warn("Maintenance completed with warnings.")
+        else:
+            err(f"Maintenance reported critical issues (exit code {proc.returncode}).")
+
+    except (subprocess.TimeoutExpired, OSError) as e:
+        err(f"Maintenance execution failed: {e}")
+
+
 def manage_menu():
     """Manage existing phantom deployments: SSH, teardown."""
     # Discover deployments from info files
@@ -868,8 +1313,9 @@ def manage_menu():
 
     print(f"\n{CYAN}  ┌─ {dep_id} ─────────────────────────────────────────┐{RESET}")
     print(f"  {CYAN}│{RESET}  {WHITE}1{RESET}) SSH into server")
-    print(f"  {CYAN}│{RESET}  {WHITE}2{RESET}) Teardown")
-    print(f"  {CYAN}│{RESET}  {WHITE}3{RESET}) Return")
+    print(f"  {CYAN}│{RESET}  {WHITE}2{RESET}) Run Maintenance")
+    print(f"  {CYAN}│{RESET}  {WHITE}3{RESET}) Teardown")
+    print(f"  {CYAN}│{RESET}  {WHITE}4{RESET}) Return")
     print(f"  {CYAN}└─────────────────────────────────────────────────────────┘{RESET}")
 
     action = input(f"\n  {MAGENTA}>{RESET} ").strip()
@@ -895,12 +1341,248 @@ def manage_menu():
         os.execvp("ssh", cmd)
 
     elif action == "2":
+        # Run maintenance
+        run_maintenance(dep)
+
+    elif action == "3":
         # Teardown
         confirm = input(f"  {RED}Destroy {dep_id}? [y/N]:{RESET} ").strip().lower()
         if confirm == "y":
             teardown_instance(dep_id)
 
-    # action == "3" or anything else: return
+    # action == "4" or anything else: return
+
+
+# ─── SMTP Config for Maintenance Reports ──────────────────────────────────
+
+def _gather_smtp_config(config):
+    """Gather SMTP settings for maintenance report emails.
+
+    Skips all prompts if smtp_host is already in config (from .env).
+    If user enters blank SMTP host, skips remaining SMTP prompts.
+    """
+    if config.get("smtp_host"):
+        ok(f"SMTP config from .env: {config['smtp_host']}")
+        return
+
+    import getpass
+    print(f"\n{CYAN}  ┌─ Maintenance Reports (SMTP) ──────────────────────┐{RESET}")
+    print(f"  {CYAN}│{RESET}  {GREY}Email health reports after weekly maintenance{RESET}")
+
+    smtp_host = input(f"  {CYAN}│{RESET}  SMTP host [{WHITE}skip{RESET}]: ").strip()
+    if not smtp_host:
+        print(f"  {CYAN}│{RESET}  {GREY}Skipping — reports will only log to /var/log/phantom-maint.log{RESET}")
+        print(f"  {CYAN}└─────────────────────────────────────────────────────┘{RESET}")
+        return
+
+    config["smtp_host"] = smtp_host
+    config["smtp_port"] = input(f"  {CYAN}│{RESET}  SMTP port [{WHITE}587{RESET}]: ").strip() or "587"
+    config["smtp_user"] = input(f"  {CYAN}│{RESET}  SMTP user: ").strip()
+    config["smtp_password"] = getpass.getpass(f"  {CYAN}│{RESET}  SMTP password: ")
+    config["smtp_from"] = input(f"  {CYAN}│{RESET}  From address: ").strip()
+    config["report_email"] = input(f"  {CYAN}│{RESET}  Report recipient: ").strip()
+
+    print(f"  {CYAN}└─────────────────────────────────────────────────────┘{RESET}")
+
+
+# ─── Email Relay VPS Orchestration ────────────────────────────────────────
+
+def _deploy_email_relay(config):
+    """Provision relay VPS, configure WireGuard relay, return relay info."""
+    relay_id = config["deployment_id"] + "-relay"
+    relay_config = {
+        "deployment_id": relay_id,
+        "provider": config.get("relay_provider") or config["provider"],
+        "api_token": config.get("relay_api_token") or config.get("api_token", ""),
+        "region": config.get("relay_region") or config.get("region", "us-east"),
+        "plan": "g6-nanode-1",  # relay is lightweight
+        "server_type": "email_relay",
+    }
+
+    # Generate SSH key with neutral comment (C-021)
+    relay_config["ssh_key"] = generate_ssh_key(relay_id, comment="")
+
+    # Override instance label for OPSEC (C-022)
+    relay_config["instance_label_override"] = f"mail-relay-{relay_id[-8:]}"
+
+    # AWS needs additional credentials
+    if relay_config["provider"] == "aws":
+        relay_config["aws_access_key"] = config.get("aws_access_key", "")
+        relay_config["aws_secret_key"] = config.get("aws_secret_key", "")
+        relay_config["instance_type"] = "t3.nano"
+
+    # 1. Provision relay nanode
+    provider_playbook = PROVIDERS_DIR / f"{relay_config['provider']}.yml"
+    host_file = WORK_DIR / relay_id / "provisioned_host"
+    host_file.parent.mkdir(parents=True, exist_ok=True)
+    relay_config["_host_output_file"] = str(host_file)
+
+    info("Provisioning relay VPS (nanode)...")
+    if not run_playbook(provider_playbook, relay_config):
+        err("Relay VPS provisioning failed")
+        return False
+
+    if not host_file.exists():
+        err("Relay provisioned but no host IP returned")
+        return False
+
+    relay_ip = host_file.read_text().strip()
+    relay_config["target_host"] = relay_ip
+    relay_config["ssh_user"] = "root"
+    ok(f"Relay VPS provisioned: {relay_ip}")
+
+    # Save relay info immediately for teardown (C-007)
+    config["relay_vps_ip"] = relay_ip
+    config["relay_deployment_id"] = relay_id
+    config["relay_provider"] = relay_config["provider"]
+
+    # 2. Base hardening on relay
+    info("Hardening relay VPS...")
+    run_playbook(PLAYBOOKS_DIR / "common" / "base_hardening.yml", relay_config)
+
+    # 3. Run relay_main.yml on relay VPS
+    relay_config["email_hostname"] = config.get("email_hostname", "")
+    info("Configuring WireGuard relay...")
+    if not run_playbook(PLAYBOOKS_DIR / "email" / "relay_main.yml", relay_config):
+        err("Relay WireGuard configuration failed")
+        teardown_instance(relay_id)
+        return False
+
+    # 4. SSH read-back: get relay pubkey, PSK, endpoint (C-008)
+    relay_info = _ssh_read_relay_info(relay_config)
+    if not relay_info:
+        err("Failed to read relay WireGuard keys")
+        teardown_instance(relay_id)
+        return False
+
+    config["relay_pubkey"] = relay_info["pubkey"]
+    config["relay_psk"] = relay_info["psk"]
+    config["relay_endpoint"] = f"{relay_ip}:51820"
+    ok("Relay WireGuard keys retrieved")
+
+    return True
+
+
+def _ssh_read_relay_info(config):
+    """Read WireGuard pubkey and PSK from relay VPS via SSH."""
+    target = config.get("target_host", "")
+    deployment_id = config["deployment_id"]
+    ssh_key = config.get("ssh_key", "")
+    known_hosts = str(_ssh_known_hosts_path(deployment_id))
+
+    ssh_base = [
+        "ssh", "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "IdentitiesOnly=yes",
+        "-o", f"UserKnownHostsFile={known_hosts}",
+        "-o", "ConnectTimeout=15",
+    ]
+    if ssh_key:
+        ssh_base.extend(["-i", ssh_key])
+    ssh_base.append(f"root@{target}")
+
+    try:
+        # Read public key
+        result = subprocess.run(
+            ssh_base + ["cat /etc/wireguard/relay_public.key"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            return None
+        pubkey = result.stdout.strip()
+
+        # Read PSK
+        result = subprocess.run(
+            ssh_base + ["cat /etc/wireguard/relay_psk.key"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            return None
+        psk = result.stdout.strip()
+
+        if not pubkey or not psk:
+            return None
+
+        return {"pubkey": pubkey, "psk": psk}
+
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def _finalize_email_relay(config):
+    """Inject Mailcow pubkey into relay VPS and start tunnel."""
+    relay_id = config.get("relay_deployment_id", "")
+    relay_ip = config.get("relay_vps_ip", "")
+    target = config.get("target_host", "")
+    deployment_id = config["deployment_id"]
+
+    if not relay_id or not relay_ip:
+        err("Relay info missing — cannot finalize tunnel")
+        return False
+
+    # 1. SSH to Mailcow, read WG public key
+    ssh_key = config.get("ssh_key", "")
+    ssh_user = config.get("ssh_user", "root")
+    known_hosts = str(_ssh_known_hosts_path(deployment_id))
+
+    ssh_mc = [
+        "ssh", "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "IdentitiesOnly=yes",
+        "-o", f"UserKnownHostsFile={known_hosts}",
+        "-o", "ConnectTimeout=15",
+    ]
+    if ssh_key:
+        ssh_mc.extend(["-i", ssh_key])
+    ssh_mc.append(f"{ssh_user}@{target}")
+
+    try:
+        result = subprocess.run(
+            ssh_mc + ["cat /etc/wireguard/mailcow_public.key"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            err("Could not read Mailcow WireGuard public key")
+            return False
+        mailcow_pubkey = result.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError) as e:
+        err(f"SSH to Mailcow failed: {e}")
+        return False
+
+    # 2. Run relay_finalize.yml on relay VPS
+    relay_config = {
+        "deployment_id": relay_id,
+        "target_host": relay_ip,
+        "ssh_key": str(_ssh_key_path(relay_id)),
+        "ssh_user": "root",
+    }
+
+    info(f"Injecting Mailcow peer key into relay VPS...")
+    if not run_playbook(
+        _relay_finalize_playbook(),
+        relay_config,
+        extra_vars={"mailcow_pubkey": mailcow_pubkey},
+    ):
+        err("Relay finalization playbook failed")
+        return False
+
+    ok("Relay tunnel established and verified")
+    return True
+
+
+def _relay_finalize_playbook():
+    """Return path to the relay finalize wrapper playbook, creating if needed."""
+    path = PLAYBOOKS_DIR / "email" / "relay_finalize.yml"
+    if not path.exists():
+        # Create wrapper inline — tasks file is at tasks/relay_finalize.yml
+        path.write_text(
+            "---\n"
+            "- name: Finalize WireGuard Mail Relay\n"
+            "  hosts: all\n"
+            "  become: true\n"
+            "  tasks:\n"
+            "    - name: Include relay finalize tasks\n"
+            "      include_tasks: tasks/relay_finalize.yml\n"
+        )
+    return path
 
 
 # ─── Deployment Orchestration ───────────────────────────────────────────────
@@ -930,7 +1612,8 @@ def deploy(server_type, config):
     for k, v in config.items():
         if k not in ("deployment_id", "server_type", "provider", "target_host",
                       "domain", "api_token", "aws_access_key", "aws_secret_key",
-                      "ssh_key", "ssh_user", "timestamp"):
+                      "ssh_key", "ssh_user", "timestamp", "become_password",
+                      "cf_tunnel_token"):
             print(f"  {WHITE}{k}:{RESET} {v}")
     print(f"{CYAN}{'─' * 60}{RESET}")
 
@@ -973,6 +1656,12 @@ def deploy(server_type, config):
         if not run_playbook(PLAYBOOKS_DIR / "common/base_hardening.yml", config):
             raise RuntimeError("Base hardening failed")
 
+        # ── Email relay VPS provisioning (before main service) ─────────
+        if server_type == "email" and config.get("email_relay_mode") == "vps":
+            info("Provisioning email relay VPS...")
+            if not _deploy_email_relay(config):
+                raise RuntimeError("Email relay provisioning failed")
+
         # Service-specific playbook
         playbook_map = {
             "matrix": PLAYBOOKS_DIR / "matrix/main.yml",
@@ -982,6 +1671,8 @@ def deploy(server_type, config):
             "vault": PLAYBOOKS_DIR / "vault/main.yml",
             "media": PLAYBOOKS_DIR / "media/main.yml",
             "email": PLAYBOOKS_DIR / "email/main.yml",
+            "git": PLAYBOOKS_DIR / "git/main.yml",
+            "voip": PLAYBOOKS_DIR / "voip/main.yml",
             "all_in_one": PLAYBOOKS_DIR / "all_in_one/main.yml",
         }
 
@@ -991,12 +1682,40 @@ def deploy(server_type, config):
             if not run_playbook(playbook, config):
                 raise RuntimeError(f"Service configuration failed for {server_type}")
 
+        # ── Finalize email relay tunnel ────────────────────────────────
+        if server_type == "email" and config.get("email_relay_mode") == "vps":
+            info("Finalizing relay tunnel...")
+            if not _finalize_email_relay(config):
+                warn("Relay tunnel finalization failed — may need manual WG peer setup")
+
+        # Post-deploy: unattended upgrades (non-fatal)
+        post_deploy = PLAYBOOKS_DIR / "common/post_deploy.yml"
+        if post_deploy.exists():
+            info("Applying post-deployment setup (unattended upgrades)...")
+            run_playbook(post_deploy, config)
+
         ok(f"Deployment complete: {deployment_id}")
+        _recover_generated_creds(config)
         save_deploy_info(config)
         ssh_connect(config)
 
     except Exception as e:
+        import traceback
         err(str(e))
+        log_file = PHANTOM_LOGS / f"deployment_{deployment_id}.log"
+        try:
+            with open(log_file, "a") as lf:
+                lf.write(f"\n{'=' * 60}\n")
+                lf.write(f"EXCEPTION during deployment\n")
+                lf.write(f"{'=' * 60}\n")
+                traceback.print_exc(file=lf)
+        except OSError:
+            pass
+        # Tear down relay VPS if it was provisioned (C-007)
+        relay_id = config.get("relay_deployment_id")
+        if relay_id:
+            warn("Tearing down relay VPS...")
+            teardown_instance(relay_id)
         if is_cloud:
             warn("Tearing down provisioned instance...")
             teardown_instance(config)
@@ -1008,13 +1727,15 @@ def deploy(server_type, config):
 MENU_ITEMS = [
     ("1", "Matrix + Element", "matrix", "Encrypted messaging homeserver"),
     ("2", "WireGuard VPN", "vpn", "Private VPN server"),
-    ("3", "Pi-hole DNS", "dns", "Ad-blocking DNS server"),
+    ("3", "AdGuard Home", "dns", "Ad-blocking DNS server"),
     ("4", "Nextcloud", "cloud", "Self-hosted file sync"),
     ("5", "Vaultwarden", "vault", "Password manager"),
     ("6", "Jellyfin", "media", "Media server"),
-    ("7", "Mail-in-a-Box", "email", "Email server"),
-    ("8", "All-in-One", "all_in_one", "Multiple services on one server"),
-    ("9", "Manage Deployment", None, "SSH, teardown existing"),
+    ("7", "Mailcow", "email", "Email server"),
+    ("8", "Git Server", "git", "Forgejo or GitLab CE"),
+    ("9", "VOIP (izPBX)", "voip", "FreePBX + Asterisk PBX"),
+    ("a", "All-in-One", "all_in_one", "Multiple services on one server"),
+    ("m", "Manage Deployment", None, "SSH, teardown existing"),
     ("0", "Exit", None, None),
 ]
 
@@ -1040,7 +1761,7 @@ def main_menu():
             print(f"\n{GREY}  Goodbye.{RESET}\n")
             break
 
-        if choice == "9":
+        if choice == "m":
             manage_menu()
             continue
 
@@ -1068,7 +1789,10 @@ def main_menu():
             warn("Invalid provider selection.")
             continue
 
-        config = {"deployment_id": generate_id()}
+        config = {}
+        _populate_config_from_env(config)
+        if "deployment_id" not in config:
+            config["deployment_id"] = generate_id()
 
         if not gather_credentials(provider, config, service_type=selected):
             continue
@@ -1078,6 +1802,9 @@ def main_menu():
             config = mod.gather_config(config)
             if config is None:
                 continue
+
+        # Gather SMTP config for maintenance reports
+        _gather_smtp_config(config)
 
         # Deploy
         deploy(selected, config)

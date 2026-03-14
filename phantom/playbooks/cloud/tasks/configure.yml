@@ -2,7 +2,7 @@
 # Nextcloud database, app, and service configuration
 
 - name: Generate MariaDB password for Nextcloud
-  command: openssl rand -base64 24
+  shell: LC_ALL=C tr -dc A-Za-z0-9 < /dev/urandom | head -c 32
   register: nc_db_password_gen
   args:
     creates: /var/www/nextcloud/.db_password

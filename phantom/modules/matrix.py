@@ -12,14 +12,19 @@ RESET = "\033[0m"
 
 _IP_RE = re.compile(r'^\d+\.\d+\.\d+\.\d+$')
 
+_ENV = f"{GREY}(from .env){RESET}"
+
 
 def gather_config(config):
     """Gather Matrix/Synapse + Element configuration."""
     print(f"\n{CYAN}  ┌─ Matrix Homeserver Configuration ─────────────────┐{RESET}")
 
-    config["domain"] = config.get("domain") or input(
-        f"  {CYAN}│{RESET}  Domain or IP (e.g. matrix.example.com or 192.168.1.100): "
-    ).strip()
+    if config.get("domain"):
+        print(f"  {CYAN}│{RESET}  Domain: {WHITE}{config['domain']}{RESET} {_ENV}")
+    else:
+        config["domain"] = input(
+            f"  {CYAN}│{RESET}  Domain or IP (e.g. matrix.example.com or 192.168.1.100): "
+        ).strip()
     if not config["domain"]:
         print(f"  {CYAN}│{RESET}  Domain is required.")
         return None
@@ -31,23 +36,35 @@ def gather_config(config):
         print(f"  {CYAN}│{RESET}  {YELLOW}Synapse server_name is immutable after first federation.{RESET}")
         print(f"  {CYAN}│{RESET}  {YELLOW}Migrating to a domain later requires a fresh database.{RESET}")
 
-    config["matrix_admin_user"] = input(
-        f"  {CYAN}│{RESET}  Admin username [{WHITE}admin{RESET}]: "
-    ).strip() or "admin"
+    if config.get("matrix_admin_user"):
+        print(f"  {CYAN}│{RESET}  Admin user: {WHITE}{config['matrix_admin_user']}{RESET} {_ENV}")
+    else:
+        config["matrix_admin_user"] = input(
+            f"  {CYAN}│{RESET}  Admin username [{WHITE}admin{RESET}]: "
+        ).strip() or "admin"
 
-    config["matrix_admin_password"] = getpass.getpass(
-        f"  {CYAN}│{RESET}  Admin password (blank=generate): "
-    ) or secrets.token_urlsafe(20)
+    if config.get("matrix_admin_password"):
+        print(f"  {CYAN}│{RESET}  Admin password: {WHITE}***{RESET} {_ENV}")
+    else:
+        config["matrix_admin_password"] = getpass.getpass(
+            f"  {CYAN}│{RESET}  Admin password (blank=generate): "
+        ) or secrets.token_urlsafe(20)
 
-    config["matrix_registration"] = input(
-        f"  {CYAN}│{RESET}  Open registration? [{WHITE}no{RESET}]: "
-    ).strip().lower()
-    config["matrix_registration"] = config["matrix_registration"] in ("yes", "y", "true")
+    if "matrix_registration" in config:
+        print(f"  {CYAN}│{RESET}  Open registration: {WHITE}{config['matrix_registration']}{RESET} {_ENV}")
+    else:
+        config["matrix_registration"] = input(
+            f"  {CYAN}│{RESET}  Open registration? [{WHITE}no{RESET}]: "
+        ).strip().lower()
+        config["matrix_registration"] = config["matrix_registration"] in ("yes", "y", "true")
 
-    config["matrix_element_web"] = input(
-        f"  {CYAN}│{RESET}  Deploy Element Web? [{WHITE}yes{RESET}]: "
-    ).strip().lower()
-    config["matrix_element_web"] = config["matrix_element_web"] not in ("no", "n", "false")
+    if "matrix_element_web" in config:
+        print(f"  {CYAN}│{RESET}  Element Web: {WHITE}{config['matrix_element_web']}{RESET} {_ENV}")
+    else:
+        config["matrix_element_web"] = input(
+            f"  {CYAN}│{RESET}  Deploy Element Web? [{WHITE}yes{RESET}]: "
+        ).strip().lower()
+        config["matrix_element_web"] = config["matrix_element_web"] not in ("no", "n", "false")
 
     # Skip matrix. prefix stripping for IPs
     if is_ip:
@@ -59,6 +76,17 @@ def gather_config(config):
     config["matrix_signing_key"] = secrets.token_hex(32)
     config["matrix_form_secret"] = secrets.token_hex(32)
     config["matrix_macaroon_secret"] = secrets.token_hex(32)
+
+    # Cloudflare Tunnel (optional)
+    if config.get("domain") and not is_ip:
+        if config.get("cf_tunnel_token"):
+            print(f"  {CYAN}│{RESET}  CF tunnel token: {WHITE}***{RESET} {GREY}(from .env){RESET}")
+        else:
+            cf_token = input(
+                f"  {CYAN}│{RESET}  Cloudflare API token for tunnel [{WHITE}skip{RESET}]: "
+            ).strip()
+            if cf_token:
+                config["cf_tunnel_token"] = cf_token
 
     print(f"  {CYAN}└─────────────────────────────────────────────────────┘{RESET}")
     return config

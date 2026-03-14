@@ -1,0 +1,34 @@
+---
+version: "3.8"
+
+networks:
+  izpbx-db:
+    driver: bridge
+
+services:
+  db:
+    image: mariadb:10.11
+    restart: always
+    networks:
+      - izpbx-db
+    environment:
+      MYSQL_ROOT_PASSWORD: "{{ izpbx_db_root_password }}"
+      MYSQL_DATABASE: "asterisk"
+      MYSQL_USER: "asterisk"
+      MYSQL_PASSWORD: "{{ izpbx_db_password }}"
+    volumes:
+      - /opt/izpbx/data/db:/var/lib/mysql
+
+  izpbx:
+    image: izdock/izpbx-asterisk:20.16.21
+    restart: always
+    depends_on:
+      - db
+    network_mode: host
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    env_file:
+      - /opt/izpbx/.env
+    volumes:
+      - /opt/izpbx/data/izpbx:/data

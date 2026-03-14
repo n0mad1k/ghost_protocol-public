@@ -1,0 +1,64 @@
+---
+# Finalize relay: inject Mailcow peer and start WireGuard tunnel
+# Requires: mailcow_pubkey variable
+
+- name: Validate mailcow_pubkey is provided
+  assert:
+    that:
+      - mailcow_pubkey is defined
+      - mailcow_pubkey | length > 0
+    fail_msg: "mailcow_pubkey must be provided to finalize the relay tunnel"
+
+- name: Read preshared key
+  slurp:
+    src: /etc/wireguard/relay_psk.key
+  register: relay_psk_finalize
+  no_log: true
+
+- name: Write PSK to temp file for wg set
+  copy:
+    content: "{{ (relay_psk_finalize.content | b64decode).strip() }}"
+    dest: /tmp/.wg_psk_tmp
+    mode: "0600"
+  no_log: true
+
+- name: Inject Mailcow peer into WireGuard interface
+  shell: |
+    wg set wg-mail peer {{ mailcow_pubkey }} \
+      preshared-key /tmp/.wg_psk_tmp \
+      allowed-ips 10.99.0.2/32
+  no_log: true
+
+- name: Remove temporary PSK file
+  file:
+    path: /tmp/.wg_psk_tmp
+    state: absent
+
+- name: Save WireGuard config from running state
+  shell: wg-quick save wg-mail
+  failed_when: false
+
+- name: Enable and start WireGuard tunnel
+  systemd:
+    name: wg-quick@wg-mail
+    state: started
+    enabled: true
+
+- name: Wait for tunnel handshake (up to 60s)
+  shell: |
+    for i in $(seq 1 12); do
+      HS=$(wg show wg-mail latest-handshakes 2>/dev/null | awk '{print $2}')
+      [ -n "$HS" ] && [ "$HS" != "0" ] && echo "OK" && exit 0
+      sleep 5
+    done
+    echo "TIMEOUT"
+    exit 1
+  register: tunnel_check
+  changed_when: false
+  failed_when: tunnel_check.stdout == "TIMEOUT"
+
+- name: Remove relay_info.txt after successful tunnel
+  file:
+    path: /etc/wireguard/relay_info.txt
+    state: absent
+  when: tunnel_check.stdout == "OK"

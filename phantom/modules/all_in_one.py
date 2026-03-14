@@ -19,10 +19,13 @@ _LOCAL_RE = re.compile(r'\.(local|lan|home|internal|test)$')
 SERVICES = [
     ("matrix", "Matrix + Element", "Encrypted messaging"),
     ("vpn", "WireGuard VPN", "Private VPN server"),
-    ("dns", "Pi-hole DNS", "Ad-blocking DNS"),
+    ("dns", "AdGuard Home", "Ad-blocking DNS"),
     ("cloud", "Nextcloud", "File sync"),
     ("vault", "Vaultwarden", "Password manager"),
     ("media", "Jellyfin", "Media server"),
+    ("email", "Mailcow", "Email server"),
+    ("git", "Git Server", "Forgejo or GitLab"),
+    ("voip", "VOIP (izPBX)", "FreePBX + Asterisk PBX"),
 ]
 
 
@@ -116,12 +119,20 @@ def gather_config(config):
                         "cloud": f"cloud.{base_domain}",
                         "vault": f"vault.{base_domain}",
                         "media": f"media.{base_domain}",
-                        "email": f"mail.{base_domain}",
+                        "email": base_domain,
                         "dns": f"dns.{base_domain}",
+                        "git": f"git.{base_domain}",
                         "vpn": base_domain,
+                        "voip": f"pbx.{base_domain}",
                     }
                     if svc in svc_subdomains:
                         config["domain"] = svc_subdomains[svc]
+                    # Email needs hostname separate from domain
+                    if svc == "email" and not is_ip:
+                        config["email_hostname"] = f"mx.{base_domain}"
+                    # VOIP needs voip_hostname set
+                    if svc == "voip" and not is_ip:
+                        config["voip_hostname"] = f"pbx.{base_domain}"
                 config = mod.gather_config(config)
                 if config is None:
                     return None

@@ -1,0 +1,143 @@
+---
+# izPBX installation — Docker, compose, bootstrap
+
+- name: Verify Debian-family OS
+  assert:
+    that:
+      - ansible_os_family == "Debian"
+    fail_msg: "izPBX requires Debian/Ubuntu. Detected: {{ ansible_distribution }}"
+
+- name: Set system hostname
+  hostname:
+    name: "{{ izpbx_hostname }}"
+
+- name: Update /etc/hostname
+  copy:
+    content: "{{ izpbx_hostname }}\n"
+    dest: /etc/hostname
+    mode: "0644"
+
+- name: Ensure hostname in /etc/hosts
+  lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1'
+    line: "127.0.1.1 {{ izpbx_hostname }}"
+
+- name: Wait for apt locks
+  include_tasks: ../../common/tasks/wait_for_apt.yml
+
+- name: Update apt cache
+  command: apt-get update
+  changed_when: false
+
+- name: Install prerequisites
+  apt:
+    name:
+      - curl
+      - ca-certificates
+      - git
+      - gnupg
+    state: present
+
+- name: Install Docker
+  include_tasks: ../../common/tasks/docker.yml
+
+- name: Allow VOIP ports through UFW
+  ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+  loop:
+    - { port: "80", proto: "tcp" }         # HTTP (Let's Encrypt + redirect)
+    - { port: "443", proto: "tcp" }        # HTTPS (web UI)
+    - { port: "5060", proto: "udp" }       # SIP signaling (UDP)
+    - { port: "5060", proto: "tcp" }       # SIP signaling (TCP)
+    - { port: "5061", proto: "tcp" }       # SIP-TLS
+    - { port: "5160", proto: "udp" }       # PJSIP alternate
+    - { port: "8089", proto: "tcp" }       # WebRTC (WSS)
+    - { port: "4569", proto: "udp" }       # IAX2
+    - { port: "10000:20000", proto: "udp" }  # RTP media range
+
+- name: Create izPBX directory structure
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/izpbx
+    - /opt/izpbx/data
+    - /opt/izpbx/data/db
+    - /opt/izpbx/data/izpbx
+
+- name: Generate izPBX DB password
+  shell: LC_ALL=C tr -dc A-Za-z0-9 < /dev/urandom | head -c 32
+  register: _izpbx_db_pass
+  args:
+    creates: /root/.izpbx_db_password
+
+- name: Save DB password
+  copy:
+    content: "{{ _izpbx_db_pass.stdout }}"
+    dest: /root/.izpbx_db_password
+    mode: "0600"
+  when: _izpbx_db_pass.changed
+
+- name: Read DB password
+  slurp:
+    src: /root/.izpbx_db_password
+  register: _izpbx_db_pass_file
+
+- name: Generate izPBX DB root password
+  shell: LC_ALL=C tr -dc A-Za-z0-9 < /dev/urandom | head -c 32
+  register: _izpbx_db_root_pass
+  args:
+    creates: /root/.izpbx_db_root_password
+
+- name: Save DB root password
+  copy:
+    content: "{{ _izpbx_db_root_pass.stdout }}"
+    dest: /root/.izpbx_db_root_password
+    mode: "0600"
+  when: _izpbx_db_root_pass.changed
+
+- name: Read DB root password
+  slurp:
+    src: /root/.izpbx_db_root_password
+  register: _izpbx_db_root_pass_file
+
+- name: Template izPBX environment file
+  template:
+    src: ../templates/izpbx.env.j2
+    dest: /opt/izpbx/.env
+    mode: "0600"
+  vars:
+    izpbx_db_password: "{{ (_izpbx_db_pass_file.content | b64decode).strip() }}"
+    izpbx_db_root_password: "{{ (_izpbx_db_root_pass_file.content | b64decode).strip() }}"
+
+- name: Template docker-compose.yml
+  template:
+    src: ../templates/docker-compose.yml.j2
+    dest: /opt/izpbx/docker-compose.yml
+    mode: "0644"
+  vars:
+    izpbx_db_password: "{{ (_izpbx_db_pass_file.content | b64decode).strip() }}"
+    izpbx_db_root_password: "{{ (_izpbx_db_root_pass_file.content | b64decode).strip() }}"
+
+- name: Pull izPBX images
+  command: docker compose pull
+  args:
+    chdir: /opt/izpbx
+  timeout: 600
+
+- name: Start izPBX stack
+  command: docker compose up -d
+  args:
+    chdir: /opt/izpbx
+  timeout: 300
+
+- name: Wait for izPBX HTTP (first boot installs FreePBX modules)
+  wait_for:
+    port: 80
+    host: 0.0.0.0
+    delay: 60
+    timeout: 600

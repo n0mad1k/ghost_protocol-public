@@ -1,0 +1,41 @@
+external_url 'https://{{ git_domain }}'
+
+# Disable bundled nginx — external nginx handles TLS
+nginx['enable'] = false
+gitlab_workhorse['listen_network'] = "tcp"
+gitlab_workhorse['listen_addr'] = "127.0.0.1:8929"
+web_server['external_users'] = ['www-data']
+
+# SSH — use GitLab's built-in SSH server on custom port
+gitlab_rails['gitlab_shell_ssh_port'] = {{ git_ssh_port }}
+gitlab_sshd['enable'] = true
+gitlab_sshd['listen_address'] = '0.0.0.0:{{ git_ssh_port }}'
+
+# Disable features not needed for privacy-focused Git hosting
+registry['enable'] = false
+prometheus['enable'] = false
+prometheus_monitoring['enable'] = true
+gitlab_rails['packages_enabled'] = false
+gitlab_rails['dependency_proxy_enabled'] = false
+
+# CI/CD: Disabled — no shared runners
+gitlab_rails['gitlab_default_projects_features_builds'] = false
+gitlab_rails['shared_runners_enabled'] = false
+
+# SECURITY: Disable signup, restrict visibility
+gitlab_rails['gitlab_signup_enabled'] = false
+gitlab_rails['gitlab_default_projects_features_wiki'] = false
+gitlab_rails['gitlab_default_projects_features_snippets'] = false
+gitlab_rails['gitlab_default_projects_features_container_registry'] = false
+
+# SECURITY: Block webhook SSRF to internal services
+gitlab_rails['allow_local_requests_from_web_hooks_and_services'] = false
+gitlab_rails['allow_local_requests_from_system_hooks'] = false
+
+# SECURITY: Restrict health endpoints to localhost
+gitlab_rails['monitoring_whitelist'] = ['127.0.0.1/8']
+
+# Logging — minimal for privacy
+logging['logrotate_frequency'] = 'daily'
+logging['logrotate_size'] = '10M'
+logging['logrotate_rotate'] = 1

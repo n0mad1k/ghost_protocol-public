@@ -1,0 +1,36 @@
+---
+# Wait for any running apt/dpkg processes to finish before proceeding.
+# Prevents race conditions with apt-daily.timer on fresh servers.
+
+- name: Stop apt-daily timers to prevent lock races
+  systemd:
+    name: "{{ item }}"
+    state: stopped
+  loop:
+    - apt-daily.timer
+    - apt-daily-upgrade.timer
+  failed_when: false
+
+- name: Kill any running apt-daily processes
+  command: "systemctl kill {{ item }}"
+  loop:
+    - apt-daily.service
+    - apt-daily-upgrade.service
+  failed_when: false
+  changed_when: false
+
+- name: Wait for apt/dpkg lock to be released
+  shell: |
+    LOCKS="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock"
+    for i in $(seq 1 90); do
+      HELD=0
+      for f in $LOCKS; do
+        [ -f "$f" ] && lsof "$f" >/dev/null 2>&1 && HELD=1 && break
+      done
+      [ "$HELD" -eq 0 ] && exit 0
+      sleep 2
+    done
+    echo "apt lock still held after 180s" >&2
+    exit 1
+  changed_when: false
+  timeout: 240

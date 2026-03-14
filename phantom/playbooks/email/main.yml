@@ -1,18 +1,30 @@
 ---
-# Mail-in-a-Box deployment — native installer script
-# MIAB manages its own nginx, TLS, DNS, and mail stack
+# Mailcow dockerized deployment
+# Full mail stack: SMTP, IMAP, webmail (SOGo), admin UI, antispam (Rspamd)
 
-- name: Deploy Mail-in-a-Box Email Server
+- name: Deploy Mailcow Email Server
   hosts: all
   become: true
   vars:
-    miab_domain: "{{ domain }}"
-    miab_first_user: "{{ email_first_user }}"
+    mailcow_hostname: "{{ email_hostname }}"
+    mailcow_mail_domain: "{{ domain }}"
+    mailcow_timezone: "{{ email_timezone | default('America/New_York') }}"
+    mailcow_first_user: "{{ email_first_user }}"
+    mailcow_admin_password: "{{ email_admin_password | default('') }}"
+    mailcow_first_password: "{{ email_first_password | default('') }}"
     target_host: "{{ target_host | default('localhost') }}"
+    mailcow_relay_host: "{{ email_relay_host | default('') }}"
+    mailcow_relay_port: "{{ email_relay_port | default('587') }}"
+    mailcow_relay_user: "{{ email_relay_user | default('') }}"
+    mailcow_relay_password: "{{ email_relay_password | default('') }}"
 
   tasks:
-    - name: Include Mail-in-a-Box installation
+    - name: Include Mailcow installation
       include_tasks: tasks/install.yml
 
-    - name: Include Mail-in-a-Box configuration
+    - name: Configure Cloudflare Tunnel
+      include_tasks: ../common/tasks/cloudflare_tunnel.yml
+      when: cf_tunnel_token is defined and cf_tunnel_token != ""
+
+    - name: Include Mailcow configuration
       include_tasks: tasks/configure.yml

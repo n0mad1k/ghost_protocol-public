@@ -1,24 +1,33 @@
 ---
-# Pi-hole DNS server deployment (native installer)
+# AdGuard Home DNS server deployment (native binary)
 
-- name: Deploy Pi-hole DNS Server
+- name: Deploy AdGuard Home DNS Server
   hosts: all
   become: true
   vars:
-    pihole_upstream: "{{ dns_upstream | default('9.9.9.9;149.112.112.112') }}"
-    pihole_domain: "{{ dns_domain | default('') }}"
-    pihole_blocklist: "{{ dns_blocklist | default('standard') }}"
+    adguard_upstream_dns: "{{ dns_upstream | default('9.9.9.9;149.112.112.112') }}"
+    dns_domain: "{{ dns_domain | default('') }}"
+    dns_blocklist: "{{ dns_blocklist | default('standard') }}"
     target_host: "{{ target_host | default('localhost') }}"
 
   tasks:
-    - name: Include Pi-hole installation
+    - name: Include AdGuard Home installation
       include_tasks: tasks/install.yml
 
-    - name: Include Pi-hole configuration
+    - name: Configure Cloudflare Tunnel
+      include_tasks: ../common/tasks/cloudflare_tunnel.yml
+      when: cf_tunnel_token is defined and cf_tunnel_token != ""
+
+    - name: Include AdGuard Home configuration
       include_tasks: tasks/configure.yml
 
   handlers:
-    - name: restart pihole-FTL
+    - name: restart adguardhome
       service:
-        name: pihole-FTL
+        name: AdGuardHome
         state: restarted
+
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded

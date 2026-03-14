@@ -1,0 +1,29 @@
+---
+# izPBX (FreePBX + Asterisk) VOIP deployment
+
+- name: Deploy izPBX (FreePBX + Asterisk)
+  hosts: all
+  become: true
+  vars:
+    izpbx_hostname: "{{ voip_hostname }}"
+    izpbx_timezone: "{{ voip_timezone | default('America/New_York') }}"
+    izpbx_admin_password: "{{ voip_admin_password | default('') }}"
+    izpbx_sip_provider: "{{ voip_provider | default('skip') }}"
+    izpbx_sip_host: "{{ voip_sip_host | default('') }}"
+    izpbx_sip_port: "{{ voip_sip_port | default('5060') }}"
+    izpbx_sip_username: "{{ voip_sip_username | default('') }}"
+    izpbx_sip_password: "{{ voip_sip_password | default('') }}"
+    izpbx_sip_transport: "{{ voip_sip_transport | default('udp') }}"
+    target_host: "{{ target_host | default('localhost') }}"
+
+  tasks:
+    - name: Include izPBX installation
+      include_tasks: tasks/install.yml
+
+    - name: Configure Cloudflare Tunnel
+      include_tasks: ../common/tasks/cloudflare_tunnel.yml
+      when: cf_tunnel_token is defined and cf_tunnel_token != ""
+
+    - name: Include izPBX SIP trunk configuration
+      include_tasks: tasks/configure.yml
+      when: izpbx_sip_provider != "skip"

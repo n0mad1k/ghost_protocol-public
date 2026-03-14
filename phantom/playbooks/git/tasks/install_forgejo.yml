@@ -1,0 +1,231 @@
+---
+- name: Wait for apt lock
+  include_tasks: ../../common/tasks/wait_for_apt.yml
+
+- name: Update apt cache
+  command: apt-get update -y
+  changed_when: false
+
+- name: Install prerequisites
+  apt:
+    name:
+      - nginx
+      - certbot
+      - python3-certbot-nginx
+      - curl
+      - ca-certificates
+      - gnupg
+      - fail2ban
+    state: present
+
+- name: Install Docker
+  include_tasks: ../../common/tasks/docker.yml
+
+- name: Create Forgejo directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: "0750"
+  loop:
+    - /opt/forgejo
+    - /opt/forgejo/data
+    - /opt/forgejo/data/gitea/conf
+
+- name: Pull Forgejo image
+  command: docker pull code.forgejo.org/forgejo/forgejo:14
+  register: _docker_pull
+  changed_when: "'Pull complete' in _docker_pull.stdout or 'Downloaded newer' in _docker_pull.stdout"
+
+# --- Secret generation (idempotent — only on first run) ---
+
+- name: Check if app.ini already exists
+  stat:
+    path: /opt/forgejo/data/gitea/conf/app.ini
+  register: _app_ini_stat
+
+- name: Generate Forgejo SECRET_KEY (first run only)
+  command: >
+    docker run --rm --entrypoint forgejo
+    code.forgejo.org/forgejo/forgejo:14
+    generate secret SECRET_KEY
+  register: _new_secret_key
+  no_log: true
+  when: not _app_ini_stat.stat.exists
+
+- name: Generate Forgejo INTERNAL_TOKEN (first run only)
+  command: >
+    docker run --rm --entrypoint forgejo
+    code.forgejo.org/forgejo/forgejo:14
+    generate secret INTERNAL_TOKEN
+  register: _new_internal_token
+  no_log: true
+  when: not _app_ini_stat.stat.exists
+
+- name: Read existing SECRET_KEY from app.ini
+  shell: grep '^SECRET_KEY' /opt/forgejo/data/gitea/conf/app.ini | sed 's/^SECRET_KEY *= *//'
+  register: _existing_secret_key
+  no_log: true
+  changed_when: false
+  when: _app_ini_stat.stat.exists
+
+- name: Read existing INTERNAL_TOKEN from app.ini
+  shell: grep '^INTERNAL_TOKEN' /opt/forgejo/data/gitea/conf/app.ini | sed 's/^INTERNAL_TOKEN *= *//'
+  register: _existing_internal_token
+  no_log: true
+  changed_when: false
+  when: _app_ini_stat.stat.exists
+
+- name: Set secret facts
+  set_fact:
+    forgejo_secret_key: "{{ _existing_secret_key.stdout | trim if _app_ini_stat.stat.exists else _new_secret_key.stdout | trim }}"
+    forgejo_internal_token: "{{ _existing_internal_token.stdout | trim if _app_ini_stat.stat.exists else _new_internal_token.stdout | trim }}"
+  no_log: true
+
+# --- Deploy config files ---
+
+- name: Deploy Forgejo env file (non-sensitive vars only)
+  template:
+    src: ../templates/forgejo.env.j2
+    dest: /opt/forgejo/env
+    mode: "0600"
+
+- name: Deploy Forgejo app.ini with secrets
+  template:
+    src: ../templates/forgejo_app.ini.j2
+    dest: /opt/forgejo/data/gitea/conf/app.ini
+    owner: "1000"
+    group: "1000"
+    mode: "0600"
+
+- name: Set Forgejo data ownership to container UID
+  file:
+    path: /opt/forgejo/data
+    state: directory
+    recurse: true
+    owner: "1000"
+    group: "1000"
+
+# --- Start container ---
+
+- name: Remove existing Forgejo container (idempotency)
+  command: docker rm -f forgejo
+  failed_when: false
+  changed_when: false
+
+- name: Run Forgejo container (hardened)
+  command: >
+    docker run -d
+    --name forgejo
+    --restart unless-stopped
+    --cap-drop ALL
+    --cap-add CHOWN --cap-add SETUID --cap-add SETGID
+    --cap-add DAC_OVERRIDE --cap-add NET_BIND_SERVICE
+    --log-opt max-size=10m --log-opt max-file=3
+    -p 127.0.0.1:3000:3000
+    -p 0.0.0.0:{{ git_ssh_port }}:22
+    -v /opt/forgejo/data:/data
+    --env-file /opt/forgejo/env
+    code.forgejo.org/forgejo/forgejo:14
+  register: _forgejo_run
+  changed_when: _forgejo_run.rc == 0
+
+# --- Fix log directory ownership (entrypoint creates it as root) ---
+
+- name: Wait for container entrypoint to finish setup
+  wait_for:
+    port: 3000
+    host: 127.0.0.1
+    delay: 10
+    timeout: 180
+
+- name: Fix log directory ownership (created as root by entrypoint)
+  command: docker exec forgejo chown -R git:git /data/gitea/log
+  changed_when: true
+
+# --- Health check with rescue diagnostics ---
+
+- name: Verify Forgejo startup
+  block:
+    - name: Verify Forgejo is responding
+      uri:
+        url: http://127.0.0.1:3000/
+        status_code: [200, 302]
+        follow_redirects: none
+        timeout: 10
+      register: _forgejo_health
+      retries: 5
+      delay: 10
+      until: _forgejo_health.status in [200, 302]
+
+  rescue:
+    - name: Dump Forgejo container logs
+      command: docker logs --tail 80 forgejo
+      register: _forgejo_crash_logs
+      failed_when: false
+      changed_when: false
+
+    - name: Show Forgejo crash logs
+      debug:
+        msg: "{{ _forgejo_crash_logs.stdout_lines | default([]) }}"
+
+    - name: Fail with diagnostic info
+      fail:
+        msg: "Forgejo failed to start — check container logs above."
+
+# --- Firewall ---
+
+- name: Allow required ports through UFW
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - "80"
+    - "443"
+    - "{{ git_ssh_port }}"
+
+# --- fail2ban ---
+
+- name: Ensure Forgejo log file exists for fail2ban
+  file:
+    path: /opt/forgejo/data/gitea/log/gitea.log
+    state: touch
+    owner: "1000"
+    group: "1000"
+    mode: "0640"
+    modification_time: preserve
+    access_time: preserve
+
+- name: Add fail2ban jail for Forgejo SSH
+  copy:
+    dest: /etc/fail2ban/jail.d/forgejo-ssh.conf
+    content: |
+      [forgejo-ssh]
+      enabled = true
+      port = {{ git_ssh_port }}
+      filter = forgejo-ssh
+      logpath = /opt/forgejo/data/gitea/log/gitea.log
+      maxretry = 5
+      bantime = 3600
+      findtime = 600
+    mode: "0644"
+
+- name: Add fail2ban filter for Forgejo SSH
+  copy:
+    dest: /etc/fail2ban/filter.d/forgejo-ssh.conf
+    content: |
+      [Definition]
+      failregex = .*Failed authentication attempt.*<HOST>
+                  .*(?:Failed to verify|invalid).* addr=<HOST>:\d+
+      ignoreregex =
+    mode: "0644"
+
+- name: Restart fail2ban
+  service:
+    name: fail2ban
+    state: restarted
+
+# NOTE: Docker publishes port {{ git_ssh_port }} via iptables FORWARD chain,
+# bypassing UFW INPUT rules. fail2ban provides brute-force protection.

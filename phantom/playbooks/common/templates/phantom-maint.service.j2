@@ -1,0 +1,10 @@
+[Unit]
+Description=Phantom Maintenance Routine
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/phantom-maint/maint.sh
+TimeoutStartSec=1800
+Nice=10
+IOSchedulingClass=idle

@@ -1,0 +1,97 @@
+---
+- name: Wait for apt lock
+  include_tasks: ../../common/tasks/wait_for_apt.yml
+
+- name: Update apt cache
+  command: apt-get update
+  changed_when: false
+
+- name: Install prerequisites
+  apt:
+    name:
+      - nginx
+      - certbot
+      - python3-certbot-nginx
+      - curl
+      - ca-certificates
+      - gnupg
+      - fail2ban
+      - openssh-server
+      - perl
+      - tzdata
+    state: present
+
+- name: Add GitLab CE apt repository
+  shell: curl -fsSL https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.deb.sh | bash
+  args:
+    creates: /etc/apt/sources.list.d/gitlab_gitlab-ce.list
+
+- name: Install GitLab CE package
+  environment:
+    EXTERNAL_URL: "https://{{ git_domain }}"
+  apt:
+    name: gitlab-ce
+    state: present
+
+- name: Deploy gitlab.rb configuration
+  template:
+    src: ../templates/gitlab.rb.j2
+    dest: /etc/gitlab/gitlab.rb
+    mode: "0600"
+
+- name: Write GitLab initial root password file
+  copy:
+    content: "{{ git_admin_password }}"
+    dest: /etc/gitlab/initial_root_password
+    mode: "0600"
+  no_log: true
+
+- name: Reconfigure GitLab
+  command: gitlab-ctl reconfigure
+  changed_when: true
+
+- name: Wait for GitLab workhorse (slow startup)
+  wait_for:
+    port: 8929
+    host: 127.0.0.1
+    delay: 30
+    timeout: 900
+
+- name: Allow required ports through UFW
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - "80"
+    - "443"
+    - "{{ git_ssh_port }}"
+
+- name: Add fail2ban jail for GitLab SSH
+  copy:
+    dest: /etc/fail2ban/jail.d/gitlab-ssh.conf
+    content: |
+      [gitlab-ssh]
+      enabled = true
+      port = {{ git_ssh_port }}
+      filter = gitlab-ssh
+      logpath = /var/log/gitlab/gitlab-shell/gitlab-shell.log
+      maxretry = 5
+      bantime = 3600
+      findtime = 600
+    mode: "0644"
+
+- name: Add fail2ban filter for GitLab SSH
+  copy:
+    dest: /etc/fail2ban/filter.d/gitlab-ssh.conf
+    content: |
+      [Definition]
+      failregex = .*Failed password.* from <HOST>
+                  .*Invalid user.* from <HOST>
+      ignoreregex =
+    mode: "0644"
+
+- name: Restart fail2ban
+  service:
+    name: fail2ban
+    state: restarted

@@ -1,0 +1,42 @@
+---
+- name: Wait for GitLab readiness
+  uri:
+    url: http://127.0.0.1:8929/-/readiness
+    status_code: 200
+    timeout: 10
+  register: _gitlab_ready
+  retries: 60
+  delay: 20
+  until: _gitlab_ready.status == 200
+  changed_when: false
+
+- name: Remove initial root password file
+  file:
+    path: /etc/gitlab/initial_root_password
+    state: absent
+
+- name: Save admin password
+  copy:
+    content: "{{ git_admin_password }}"
+    dest: /etc/gitlab/.admin_password
+    mode: "0600"
+  no_log: true
+
+- name: Display GitLab setup info
+  debug:
+    msg: |
+      GitLab CE deployed successfully (native omnibus).
+
+      Web UI: https://{{ git_domain }}
+      Username: root
+      Password: check /etc/gitlab/.admin_password
+      Git SSH: ssh://git@{{ git_domain }}:{{ git_ssh_port }}
+      Config: /etc/gitlab/gitlab.rb
+      Data:   /var/opt/gitlab/
+      Logs:   /var/log/gitlab/
+
+      Security notes:
+        - CI/CD disabled by default
+        - Signup disabled
+        - Webhooks restricted (no local requests)
+        - Health endpoints restricted to localhost

@@ -1,65 +1,78 @@
 ---
-# Pi-hole native configuration
+# AdGuard Home configuration
 
-- name: Generate Pi-hole admin password
-  command: openssl rand -base64 16
-  register: pihole_password_gen
+- name: Stop AdGuard Home for configuration
+  service:
+    name: AdGuardHome
+    state: stopped
+  failed_when: false
+
+- name: Generate admin password if not set
+  shell: LC_ALL=C tr -dc A-Za-z0-9 < /dev/urandom | head -c 24
+  register: adguard_password_gen
   args:
-    creates: /etc/pihole/.phantom_password
+    creates: /opt/AdGuardHome/.phantom_password
 
 - name: Save admin password
   copy:
-    content: "{{ pihole_password_gen.stdout }}"
-    dest: /etc/pihole/.phantom_password
+    content: "{{ adguard_password_gen.stdout }}"
+    dest: /opt/AdGuardHome/.phantom_password
     mode: "0600"
-  when: pihole_password_gen.changed
+  when: adguard_password_gen.changed
 
 - name: Read saved password
   slurp:
-    src: /etc/pihole/.phantom_password
-  register: pihole_password_file
+    src: /opt/AdGuardHome/.phantom_password
+  register: adguard_password_file
 
-- name: Set Pi-hole admin password
-  command: "pihole -a -p {{ (pihole_password_file.content | b64decode).strip() }}"
-  changed_when: true
+- name: Set admin password fact
+  set_fact:
+    adguard_admin_password: "{{ (adguard_password_file.content | b64decode).strip() }}"
 
-- name: Set upstream DNS servers
-  command: "pihole -a setdns {{ pihole_upstream | replace(';', ' ') }}"
-  changed_when: true
+- name: Generate bcrypt hash for admin password
+  command: "python3 -c \"from passlib.hash import bcrypt; print(bcrypt.using(rounds=10).hash('{{ adguard_admin_password }}'))\""
+  register: adguard_bcrypt_result
+  changed_when: false
+  no_log: true
 
-- name: Configure blocklist level
-  block:
-    - name: Update gravity (standard blocklist)
-      command: pihole -g
-      changed_when: true
-      when: pihole_blocklist == "standard"
+- name: Set bcrypt hash fact
+  set_fact:
+    adguard_bcrypt_hash: "{{ adguard_bcrypt_result.stdout }}"
 
-    - name: Add aggressive blocklists
-      lineinfile:
-        path: /etc/pihole/adlists.list
-        line: "{{ item }}"
-        create: true
-        mode: "0644"
-      loop:
-        - "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
-        - "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"
-      when: pihole_blocklist == "aggressive"
+- name: Parse upstream DNS servers
+  set_fact:
+    adguard_upstream: "{{ adguard_upstream_dns.split(';') }}"
 
-    - name: Update gravity after blocklist changes
-      command: pihole -g
-      changed_when: true
-      when: pihole_blocklist == "aggressive"
+- name: Set blocklist level
+  set_fact:
+    adguard_blocklist: "{{ dns_blocklist | default('standard') }}"
 
-- name: Enable DNSSEC
-  command: pihole -a dnssec on
-  changed_when: true
+- name: Deploy AdGuard Home configuration
+  template:
+    src: ../templates/AdGuardHome.yaml.j2
+    dest: /opt/AdGuardHome/AdGuardHome.yaml
+    mode: "0600"
+  notify: restart adguardhome
 
-- name: Ensure pihole-FTL is running
+- name: Start and enable AdGuard Home
   service:
-    name: pihole-FTL
+    name: AdGuardHome
     state: started
     enabled: true
 
+- name: Wait for AdGuard Home to be ready
+  wait_for:
+    port: 3000
+    host: 127.0.0.1
+    delay: 3
+    timeout: 30
+
+- name: Include nginx reverse proxy configuration
+  include_tasks: nginx.yml
+  when: dns_domain is defined and dns_domain != ""
+
 - name: Display admin credentials
   debug:
-    msg: "Pi-hole admin password saved to /etc/pihole/.phantom_password — access admin at http://{{ ansible_default_ipv4.address | default('server_ip') }}/admin"
+    msg: >-
+      AdGuard Home admin password saved to /opt/AdGuardHome/.phantom_password —
+      {{ 'access admin at https://' + dns_domain if (dns_domain is defined and dns_domain) else 'access admin at http://' + (ansible_default_ipv4.address | default('server_ip')) + ':3000' }}

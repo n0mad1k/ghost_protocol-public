@@ -1,45 +1,216 @@
 ---
-# Mail-in-a-Box non-interactive installation
+# Mailcow API configuration — admin password, domain, mailbox, DKIM
 
-- name: Generate admin password
-  command: openssl rand -base64 16
-  register: miab_admin_password
-  args:
-    creates: /root/.miab_admin_password
-
-- name: Save admin password
-  copy:
-    content: "{{ miab_admin_password.stdout }}"
-    dest: /root/.miab_admin_password
-    mode: "0600"
-  when: miab_admin_password.changed
-
-- name: Read saved admin password
+- name: Read API key
   slurp:
-    src: /root/.miab_admin_password
-  register: miab_password_file
+    src: /root/.mailcow_api_key
+  register: _mc_api_key_file
 
-- name: Clone Mail-in-a-Box repository
-  git:
-    repo: https://github.com/mail-in-a-box/mailinabox.git
-    dest: /opt/mailinabox
-    version: main
-    depth: 1
+- name: Set API key fact
+  set_fact:
+    _mc_api_key: "{{ (_mc_api_key_file.content | b64decode).strip() }}"
 
-- name: Run Mail-in-a-Box installer (non-interactive)
-  command: bash /opt/mailinabox/setup/start.sh
+- name: Wait for Mailcow API ready
+  uri:
+    url: "https://{{ mailcow_hostname }}/api/v1/get/status/containers"
+    method: GET
+    headers:
+      X-API-Key: "{{ _mc_api_key }}"
+    validate_certs: false
+    status_code: 200
+    timeout: 15
+  register: _mc_api_check
+  retries: 20
+  delay: 15
+  until: _mc_api_check.status == 200
+
+- name: Generate admin password (if not provided)
+  shell: LC_ALL=C tr -dc A-Za-z0-9 < /dev/urandom | head -c 24
+  register: _mc_admin_pass_gen
   args:
-    creates: /etc/mailinabox.conf
-  environment:
-    NONINTERACTIVE: "1"
-    PRIMARY_HOSTNAME: "{{ miab_domain }}"
-    EMAIL_ADDR: "{{ miab_first_user }}"
-    EMAIL_PW: "{{ (miab_password_file.content | b64decode).strip() }}"
-  timeout: 600
+    creates: /root/.mailcow_admin_password
+  when: (mailcow_admin_password | default('')) == ''
 
-- name: Display admin credentials
+- name: Save generated admin password
+  copy:
+    content: "{{ _mc_admin_pass_gen.stdout }}"
+    dest: /root/.mailcow_admin_password
+    mode: "0600"
+  when: (mailcow_admin_password | default('')) == '' and _mc_admin_pass_gen.changed
+
+- name: Save provided admin password
+  copy:
+    content: "{{ mailcow_admin_password }}"
+    dest: /root/.mailcow_admin_password
+    mode: "0600"
+  when: (mailcow_admin_password | default('')) != ''
+
+- name: Read admin password
+  slurp:
+    src: /root/.mailcow_admin_password
+  register: _mc_admin_pass_file
+
+- name: Set admin password fact
+  set_fact:
+    _mc_admin_pass: "{{ (_mc_admin_pass_file.content | b64decode).strip() }}"
+
+- name: Change admin password
+  uri:
+    url: "https://{{ mailcow_hostname }}/api/v1/edit/admin"
+    method: POST
+    headers:
+      X-API-Key: "{{ _mc_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      attr:
+        password: "{{ _mc_admin_pass }}"
+        password2: "{{ _mc_admin_pass }}"
+      items:
+        - "admin"
+    validate_certs: false
+    status_code: [200, 401]
+  no_log: true
+
+- name: Add mail domain
+  uri:
+    url: "https://{{ mailcow_hostname }}/api/v1/add/domain"
+    method: POST
+    headers:
+      X-API-Key: "{{ _mc_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      domain: "{{ mailcow_mail_domain }}"
+      active: "1"
+      restart_sogo: "1"
+    validate_certs: false
+    status_code: [200, 409]
+  register: _mc_domain_add
+
+- name: Parse first user address
+  set_fact:
+    _mc_user_local: "{{ mailcow_first_user.split('@')[0] }}"
+    _mc_user_domain: "{{ mailcow_first_user.split('@')[1] | default(mailcow_mail_domain) }}"
+
+- name: Generate first user password (if not provided)
+  shell: LC_ALL=C tr -dc A-Za-z0-9 < /dev/urandom | head -c 24
+  register: _mc_user_pass_gen
+  args:
+    creates: /root/.mailcow_user_password
+  when: (mailcow_first_password | default('')) == ''
+
+- name: Save generated user password
+  copy:
+    content: "{{ _mc_user_pass_gen.stdout }}"
+    dest: /root/.mailcow_user_password
+    mode: "0600"
+  when: (mailcow_first_password | default('')) == '' and _mc_user_pass_gen.changed
+
+- name: Save provided user password
+  copy:
+    content: "{{ mailcow_first_password }}"
+    dest: /root/.mailcow_user_password
+    mode: "0600"
+  when: (mailcow_first_password | default('')) != ''
+
+- name: Read user password
+  slurp:
+    src: /root/.mailcow_user_password
+  register: _mc_user_pass_file
+
+- name: Set user password fact
+  set_fact:
+    _mc_user_pass: "{{ (_mc_user_pass_file.content | b64decode).strip() }}"
+
+- name: Add first mailbox
+  uri:
+    url: "https://{{ mailcow_hostname }}/api/v1/add/mailbox"
+    method: POST
+    headers:
+      X-API-Key: "{{ _mc_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      local_part: "{{ _mc_user_local }}"
+      domain: "{{ _mc_user_domain }}"
+      name: "{{ _mc_user_local }}"
+      password: "{{ _mc_user_pass }}"
+      password2: "{{ _mc_user_pass }}"
+      active: "1"
+    validate_certs: false
+    status_code: [200, 409]
+  no_log: true
+
+- name: Configure Postfix smarthost relay
+  when: mailcow_relay_host is defined and mailcow_relay_host != ""
+  block:
+    - name: Set Postfix relayhost
+      command: >
+        docker compose exec -T postfix-mailcow postconf -e
+        "relayhost=[{{ mailcow_relay_host | quote }}]:{{ mailcow_relay_port | default('587') }}"
+        "smtp_sasl_auth_enable=yes"
+        "smtp_sasl_password_maps=hash:/opt/postfix/conf/smarthost_passwd"
+        "smtp_sasl_security_options=noanonymous"
+        "smtp_tls_security_level=encrypt"
+        "smtp_tls_CAfile=/etc/ssl/certs/ca-certificates.crt"
+      args:
+        chdir: /opt/mailcow-dockerized
+
+    - name: Write smarthost credentials
+      shell: |
+        docker compose exec -T postfix-mailcow bash -c 'echo "[{{ mailcow_relay_host | quote }}]:{{ mailcow_relay_port | default("587") }} {{ mailcow_relay_user | quote }}:{{ mailcow_relay_password | quote }}" > /opt/postfix/conf/smarthost_passwd && postmap /opt/postfix/conf/smarthost_passwd && chmod 600 /opt/postfix/conf/smarthost_passwd /opt/postfix/conf/smarthost_passwd.db'
+      args:
+        chdir: /opt/mailcow-dockerized
+      no_log: true
+
+    - name: Reload Postfix with relay config
+      command: docker compose exec -T postfix-mailcow postfix reload
+      args:
+        chdir: /opt/mailcow-dockerized
+
+    - name: Verify relay config
+      command: docker compose exec -T postfix-mailcow postconf relayhost
+      args:
+        chdir: /opt/mailcow-dockerized
+      register: _relay_check
+
+    - name: Show relay config
+      debug:
+        msg: "Smarthost relay configured: {{ _relay_check.stdout }}"
+
+- name: Retrieve DKIM key
+  uri:
+    url: "https://{{ mailcow_hostname }}/api/v1/get/dkim/{{ mailcow_mail_domain }}"
+    method: GET
+    headers:
+      X-API-Key: "{{ _mc_api_key }}"
+    validate_certs: false
+    status_code: [200, 404]
+  register: _mc_dkim
+
+- name: Display Mailcow credentials and DNS records
   debug:
-    msg: >
-      Mail-in-a-Box installed. Admin: {{ miab_first_user }}
-      Password saved to /root/.miab_admin_password
-      Web admin: https://{{ miab_domain }}/admin
+    msg: |
+      ═══════════════════════════════════════════════════
+        Mailcow deployed successfully.
+
+        Web UI:    https://{{ mailcow_hostname }}
+        Admin:     https://{{ mailcow_hostname }}/admin
+        Webmail:   https://{{ mailcow_hostname }}/SOGo
+        Username:  admin
+        Password:  see /root/.mailcow_admin_password
+
+        First mailbox: {{ mailcow_first_user }}
+        Mailbox pass:  see /root/.mailcow_user_password
+
+        ─── Required DNS Records (for {{ mailcow_mail_domain }}) ───
+        MX     {{ mailcow_hostname }}  priority 10
+        SPF    v=spf1 mx -all
+        DMARC  v=DMARC1; p=quarantine; rua=mailto:postmaster@{{ mailcow_mail_domain }}
+      {% if _mc_dkim.status == 200 and _mc_dkim.json is defined %}
+        DKIM   {{ _mc_dkim.json.dkim_txt | default('Run DKIM setup in admin panel') }}
+      {% else %}
+        DKIM   Generate via admin panel → Configuration → ARC/DKIM keys
+      {% endif %}
+      ═══════════════════════════════════════════════════

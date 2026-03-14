@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Phantom — Cloudflare Tunnel Setup
 # Deployed by phantom to {{ ansible_host | default('this server') }}
-# Run this script to expose {{ _tls_domain }} via Cloudflare Tunnel.
-# Requires: a Cloudflare account managing the domain's DNS zone.
+# Exposes {{ _tls_domain }} via Cloudflare Tunnel.
 #
 # Usage:
 #   ./setup-tunnel.sh                  # Interactive — prompts for API token
@@ -215,13 +214,19 @@ if [ -z "${ZONE_ID}" ]; then
     echo "[-] Could not find zone for ${BASE_DOMAIN}"
     echo "    Add the CNAME manually: ${DOMAIN} → ${TUNNEL_ID}.cfargotunnel.com"
 else
-    # Check for existing record
-    EXISTING_RECORD=$(curl -sf -X GET \
-        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DOMAIN}" \
-        -H "Authorization: Bearer ${CF_TOKEN}" \
-        -H "Content-Type: application/json" 2>/dev/null || true)
+    TUNNEL_CNAME="${TUNNEL_ID}.cfargotunnel.com"
 
-    RECORD_ID=$(echo "${EXISTING_RECORD}" | python3 -c "
+    # Helper: upsert a proxied CNAME for a given hostname
+    upsert_dns() {
+        local hostname="$1"
+        local existing
+        existing=$(curl -sf -X GET \
+            "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${hostname}&type=CNAME" \
+            -H "Authorization: Bearer ${CF_TOKEN}" \
+            -H "Content-Type: application/json" 2>/dev/null || true)
+
+        local record_id
+        record_id=$(echo "${existing}" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -230,27 +235,37 @@ try:
 except: pass
 " 2>/dev/null || true)
 
-    TUNNEL_CNAME="${TUNNEL_ID}.cfargotunnel.com"
+        if [ -n "${record_id}" ]; then
+            curl -sf -X PUT \
+                "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${record_id}" \
+                -H "Authorization: Bearer ${CF_TOKEN}" \
+                -H "Content-Type: application/json" \
+                --data "{\"type\":\"CNAME\",\"name\":\"${hostname}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}" \
+                >/dev/null 2>&1
+            echo "[+] DNS updated: ${hostname} → tunnel (proxied)"
+        else
+            curl -sf -X POST \
+                "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records" \
+                -H "Authorization: Bearer ${CF_TOKEN}" \
+                -H "Content-Type: application/json" \
+                --data "{\"type\":\"CNAME\",\"name\":\"${hostname}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}" \
+                >/dev/null 2>&1
+            echo "[+] DNS created: ${hostname} → tunnel (proxied)"
+        fi
+    }
 
-    if [ -n "${RECORD_ID}" ]; then
-        # Update existing record to point to tunnel
-        echo "    Updating existing DNS record..."
-        curl -sf -X PUT \
-            "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
-            -H "Authorization: Bearer ${CF_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "{\"type\":\"CNAME\",\"name\":\"${DOMAIN}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}" \
-            >/dev/null 2>&1
-        echo "[+] DNS record updated: ${DOMAIN} → tunnel (proxied)"
+    upsert_dns "${DOMAIN}"
+
+    # Verify the record actually resolves (Cloudflare silently drops some)
+    echo "[*] Verifying DNS propagation..."
+    sleep 5
+    RESOLVED=$(dig +short "${DOMAIN}" @1.1.1.1 A 2>/dev/null || true)
+    if [ -z "${RESOLVED}" ]; then
+        echo "[!] WARNING: ${DOMAIN} did not resolve after 5 seconds."
+        echo "    DNS propagation may take a few minutes."
+        echo "    Verify at: dig +short ${DOMAIN} @1.1.1.1"
     else
-        # Create new CNAME
-        curl -sf -X POST \
-            "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records" \
-            -H "Authorization: Bearer ${CF_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "{\"type\":\"CNAME\",\"name\":\"${DOMAIN}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}" \
-            >/dev/null 2>&1
-        echo "[+] DNS CNAME created: ${DOMAIN} → tunnel (proxied)"
+        echo "[+] DNS verified: ${DOMAIN} → ${RESOLVED}"
     fi
 fi
 
@@ -323,15 +338,6 @@ else
     exit 1
 fi
 
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://${DOMAIN}/" --max-time 10 2>/dev/null || echo "000")
-if [ "${HTTP_CODE}" != "000" ] && [ "${HTTP_CODE}" != "502" ] && [ "${HTTP_CODE}" != "503" ]; then
-    echo "[+] Tunnel verified — https://${DOMAIN}/ returned HTTP ${HTTP_CODE}"
-else
-    echo "[!] Tunnel may need a moment to propagate."
-    echo "    DNS changes can take 1-5 minutes."
-    echo "    Test: curl -I https://${DOMAIN}/"
-fi
-
 echo ""
 echo "============================================"
 echo "  Cloudflare Tunnel setup complete!"
@@ -339,6 +345,9 @@ echo ""
 echo "  Domain:  https://${DOMAIN}"
 echo "  Tunnel:  ${TUNNEL_NAME} (${TUNNEL_ID})"
 echo "  Service: systemctl status cloudflared"
+echo ""
+echo "  Admin:   https://${DOMAIN}/admin"
+echo "  Webmail: https://${DOMAIN}/SOGo"
 echo ""
 echo "  To remove: cloudflared tunnel delete ${TUNNEL_NAME}"
 echo "============================================"
