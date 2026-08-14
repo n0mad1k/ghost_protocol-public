@@ -18,7 +18,7 @@ def gather_config(config):
     print(f"\n{CYAN}  ┌─ Matrix Homeserver Configuration ─────────────────┐{RESET}")
 
     config["domain"] = config.get("domain") or input(
-        f"  {CYAN}│{RESET}  Domain or IP (e.g. matrix.example.com or 10.0.0.0): "
+        f"  {CYAN}│{RESET}  Domain or IP (e.g. matrix.example.com or 192.0.2.10): "
     ).strip()
     if not config["domain"]:
         print(f"  {CYAN}│{RESET}  Domain is required.")

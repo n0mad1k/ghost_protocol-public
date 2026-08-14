@@ -14,7 +14,7 @@ def gather_config(config):
     print(f"  {CYAN}│{RESET}  {GREY}Pre-built binary + systemd + nginx{RESET}")
 
     config["domain"] = config.get("domain") or input(
-        f"  {CYAN}│{RESET}  Domain or IP (e.g. vault.example.com or 10.0.0.0): "
+        f"  {CYAN}│{RESET}  Domain or IP (e.g. vault.example.com or 192.0.2.10): "
     ).strip()
 
     config["vault_admin_token"] = input(
