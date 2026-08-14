@@ -38,9 +38,9 @@ sleep 0.3
 
 # Load theme from opsec config
 OPSEC_CONF="/etc/opsec/opsec.conf"
-THEME="default"
+THEME="apt"
 [ -f "$OPSEC_CONF" ] && THEME=$(grep "^WIDGET_THEME=" "$OPSEC_CONF" 2>/dev/null | cut -d'"' -f2)
-[ -z "$THEME" ] && THEME="default"
+[ -z "$THEME" ] && THEME="apt"
 
 THEME_FILE="/etc/opsec/themes/${THEME}.theme"
 if [ -f "$THEME_FILE" ]; then
@@ -58,7 +58,7 @@ fi
 # Generate config with theme colors and chosen position
 mkdir -p "$CONKY_DIR"
 cat > "$CONF" << EOF
--- OPSEC Status Widget — OPSEC Status Widget
+-- OPSEC Status Widget
 -- Theme: ${THEME} (${THEME_LABEL:-Custom})
 -- Position: ${ALIGN}
 

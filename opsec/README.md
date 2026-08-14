@@ -1,97 +1,66 @@
-# opsec — Privacy Hardening Toolkit
+# Ghost Protocol OPSEC
 
-A comprehensive OPSEC hardening suite for Linux systems. Designed for anyone who needs strong privacy defaults without constant manual configuration.
+Fail-closed Linux routing for a disposable Tor Browser profile using the system Tor daemon.
 
-## Features
+## Security boundary
 
-- **Kill Switch**: iptables rules that block all non-Tor/VPN traffic when enabled
-- **MAC Randomization**: Automatic MAC address spoofing on boot
-- **Hostname Randomization**: Random hostname generation to prevent tracking
-- **DNS Leak Prevention**: Locks DNS to privacy resolvers with immutable resolv.conf
-- **Tor Integration**: Configurable Tor routing with circuit management, exit node filtering, and bridge support
-- **Traffic Blending**: Decoy browsing traffic to mask real activity patterns
-- **Desktop Widget**: Conky-based status HUD with theme support (7 themes included)
-- **Deployment Levels**: Preset configurations from standard privacy to full paranoid mode
-- **Profile System**: Save, load, and switch between configuration profiles
-- **SSH Honeypot Detection**: Check SSH servers against known honeypot signatures
-- **WiFi Security Auditing**: Check wireless configuration for common leaks
+- `nftables` permits network egress only from the Tor service account while Ghost Mode is active.
+- DNS is redirected to Tor's local DNS listener.
+- Persistent Firefox, Brave, Chromium, and Tor Browser profiles are stopped and denied network access.
+- The supported browser launcher extracts a clean Tor Browser tree into a systemd-owned runtime directory and forces it to the system Tor SOCKS listener.
+- A five-minute activation watchdog automatically tears down a stalled activation and restores normal networking.
+- Failed activation remains contained and never reports `ACTIVE` without positive firewall, DNS, Tor, and browser-policy checks.
 
-## Installation
+This does not make an unsafe host, logged-in identity, browser action, document, or behavior anonymous. It also cannot prevent an administrator from bypassing its controls.
+
+## Anonymity-set defaults
+
+The shipped configuration intentionally leaves these Tor directives unset:
+
+- `ExcludeExitNodes` and `StrictNodes`
+- `MaxCircuitDirtiness`
+- `ConnectionPadding`
+- `NumEntryGuards`
+- bridges and automatic decoy traffic
+
+Tor therefore uses its upstream and consensus-driven defaults. Custom exit policies, rapid circuit rotation, forced guard counts, padding overrides, bridges, and traffic blending can make a deployment more distinguishable. Enable them only for a documented threat model.
+
+## Supported platforms
+
+- Arch Linux with the tested `tor-browser` package
+- Debian-family systems with the pinned, signature-verified Tor Browser archive
+- systemd, nftables, AppArmor, and a normal desktop user session
+
+Unknown distributions or browser layouts fail closed.
+
+## Install
 
 ```bash
 sudo ./install.sh
 ```
 
-This copies scripts to `/usr/local/bin/`, configs to `/etc/opsec/`, and sets up systemd services.
+The installer creates an exact rollback transaction under `/var/backups/opsec-browser/` before changing system files. Package installation is the only non-transactional step.
 
-## Usage
-
-```bash
-# Interactive configuration
-sudo opsec-config.sh
-
-# Toggle ghost mode (advanced privacy)
-sudo opsec-mode.sh on
-sudo opsec-mode.sh off
-
-# Check OPSEC status
-opsec-check.sh
-
-# Pre-flight readiness check
-opsec-preflight.sh
-
-# Kill switch control
-sudo opsec-killswitch.sh on|off|status
-
-# Apply a deployment level
-sudo opsec-config.sh --level apply bare-metal-standard
-```
-
-## Deployment Levels
-
-| Level | Description |
-|---|---|
-| `bare-metal-standard` | Physical machine, ghost mode toggle available |
-| `bare-metal-paranoid` | Physical machine, ghost mode always on |
-| `cloud-normal` | Cloud VPS, standard privacy (no MAC/hostname) |
-| `cloud-paranoid` | Cloud VPS, maximum security always on |
-
-## Configuration
-
-All settings live in `/etc/opsec/opsec.conf`. Edit via `opsec-config.sh` (interactive TUI) or manually.
-
-Key settings:
-- `TOR_BLACKLIST` — Comma-separated country codes to exclude from Tor exit nodes
-- `DNS_MODE` — DNS resolution mode: `tor`, `quad9`, `cloudflare`, `doh`, `dot`, `custom`
-- `HOSTNAME_PATTERN` — Hostname strategy: `desktop`, `random`, `custom`
-- `LEVEL_TYPE` — `standard` (toggle) or `paranoid` (always on)
-
-## Widget Themes
-
-Seven color themes for the desktop status widget:
-
-`default` `aurora` `ember` `slate` `cyberpunk` `frost` `terminal`
+## Use
 
 ```bash
-sudo opsec-config.sh --theme apply cyberpunk
+sudo opsec-mode on
+opsec-browser
+sudo opsec-mode status
+sudo opsec-mode off
 ```
 
-## Important: Review Your Configuration
+Do not launch persistent-profile browsers while Ghost Mode is active. The policy blocks their network access, but direct binary execution remains an unsupported path.
 
-**This toolkit ships with intentionally generic defaults.** After installing, you **must** run `sudo opsec-config.sh` and review every setting.
+## Validation
 
-Key items that require your input:
-- **`TOR_BLACKLIST`** is empty by default. You need to set exit node exclusions based on your threat model.
-- **`HOSTNAME_PATTERN`** defaults to `desktop` with no prefix. Set to `random` if you want randomization.
-- **Kill switch and traffic blending** are off by default. Enable them if your threat model requires it.
-- **Deployment level** should be selected to match your environment (bare metal vs cloud, standard vs paranoid).
+```bash
+./tests/test-opsec-browser-static.sh
+./tests/test-public-defaults.sh
+```
 
-The generic defaults are **safe but minimal**. They prevent accidental misconfiguration but do not represent a hardened posture. Customize for your needs.
-
-## Responsible Use
-
-This toolkit is designed for legitimate privacy protection. Secure deletion features are irreversible. Network anonymization tools have limitations and are not a guarantee of anonymity. Comply with applicable laws in your jurisdiction. This software is provided as-is.
+These repository checks validate policy construction and release hygiene. Run the live integration harness on a disposable target before relying on the toolkit for sensitive work.
 
 ## License
 
-MIT
+MIT. See `LICENSE` and `NOTICE.md` in the exported repository.

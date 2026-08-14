@@ -10,6 +10,7 @@
 #   opsec-preflight.sh --full       Run base + ghost checks
 #   opsec-preflight.sh --base --enforce   Base checks, exit 1 on fail
 #   opsec-preflight.sh --full --enforce   Full checks, exit 1 on fail
+#   opsec-preflight.sh --attachment-audit <persona>   Scan persona-send/ for unencrypted files
 
 OPSEC_LIB="/usr/local/lib/opsec/opsec-lib.sh"
 OPSEC_CONF="/etc/opsec/opsec.conf"
@@ -33,6 +34,45 @@ type opsec_green >/dev/null 2>&1 || {
     opsec_dim()    { echo -e "\033[38;5;244m    $*\033[0m"; }
     opsec_hdr()    { echo -e "\033[38;5;51m━━━ \033[38;5;201m$*\033[38;5;51m ━━━\033[0m"; }
 }
+
+# ─── ATTACHMENT AUDIT (standalone subcommand) ─────────────────────────────────
+run_attachment_audit() {
+    local persona="$1"
+    if [ -z "$persona" ]; then
+        echo "Usage: opsec-preflight.sh --attachment-audit <persona>" >&2
+        exit 2
+    fi
+    if ! id "$persona" >/dev/null 2>&1; then
+        echo "Unknown persona: ${persona}" >&2
+        exit 2
+    fi
+
+    local send_dir="/home/${persona}/persona-send"
+    if [ ! -d "$send_dir" ]; then
+        echo "OK: ${send_dir}/ clean"
+        exit 0
+    fi
+
+    local unencrypted=()
+    while IFS= read -r -d '' f; do
+        case "${f,,}" in
+            *.gpg|*.age|*.asc|*.enc) ;;
+            *) unencrypted+=("$f") ;;
+        esac
+    done < <(find "$send_dir" -maxdepth 1 -type f -print0)
+
+    if [ "${#unencrypted[@]}" -gt 0 ]; then
+        echo "FAIL: unencrypted files in ${send_dir}/: ${unencrypted[*]}" >&2
+        exit 1
+    fi
+
+    echo "OK: ${send_dir}/ clean"
+    exit 0
+}
+
+if [ "${1:-}" = "--attachment-audit" ]; then
+    run_attachment_audit "${2:-}"
+fi
 
 # ─── PARSE ARGS ───────────────────────────────────────────────────────────────
 MODE_SCORE=false
@@ -62,6 +102,7 @@ fi
 # ─── ENVIRONMENT ──────────────────────────────────────────────────────────────
 LEVEL="${DEPLOYMENT_LEVEL:-bare-metal-standard}"
 LTYPE="${LEVEL_TYPE:-standard}"
+SOCKS_PORT="${TOR_SOCKS_PORT:-9050}"
 
 is_cloud() {
     case "$LEVEL" in
@@ -189,7 +230,7 @@ run_ghost_checks() {
     # 1. VPN or Tor active
     local vpn_if tor_ok=false
     vpn_if=$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -E '^(tun|wg)' | head -1)
-    ss -tln 2>/dev/null | grep -q ':9050 ' && tor_ok=true
+    ss -H -ltn 2>/dev/null | awk -v port="$SOCKS_PORT" '$4 == "127.0.0.1:" port {found=1} END {exit !found}' && tor_ok=true
 
     if [ -n "$vpn_if" ] || $tor_ok; then
         local detail=""
@@ -203,10 +244,12 @@ run_ghost_checks() {
     # 2. Kill switch armed
     if [ -f /var/run/opsec-breakglass.active ]; then
         check "Kill switch armed" "fail" "BREAK-GLASS active — kill switch intentionally dropped"
-    elif iptables -L GP_FW >/dev/null 2>&1; then
+    elif /usr/local/bin/opsec-killswitch.sh strict-status >/dev/null 2>&1; then
         check "Kill switch armed" "pass"
+    elif ! nft list table inet opsec_strict >/dev/null 2>&1 && iptables -L OPSEC_KILLSWITCH >/dev/null 2>&1; then
+        check "Kill switch armed" "pass" "legacy iptables policy"
     else
-        check "Kill switch armed" "fail" "GP_FW chain not found"
+        check "Kill switch armed" "fail" "strict firewall could not be verified"
     fi
 
     # 3. DNS locked to Tor
@@ -240,6 +283,95 @@ run_ghost_checks() {
         check "resolv.conf immutable" "pass"
     else
         check "resolv.conf immutable" "fail" "chattr +i not set"
+    fi
+
+    # 6. Dirty-browser policy transaction is active for the desktop UID.
+    local browser_uid
+    browser_uid=$(cat /run/opsec/browser.uid 2>/dev/null || true)
+    if [[ "$browser_uid" =~ ^[0-9]+$ ]] && \
+       /usr/local/bin/opsec-browser-policy.sh status "$browser_uid" >/dev/null 2>&1; then
+        check "Dirty browsers network-blocked" "pass" "UID=${browser_uid}"
+    else
+        check "Dirty browsers network-blocked" "fail" "verified policy transaction missing"
+    fi
+
+    # 7. No stale failed-closed marker may coexist with an activation.
+    if [ -e /run/opsec/activation-unsafe ]; then
+        check "Activation state consistent" "fail" "network containment unverified"
+    elif [ -e /run/opsec/activation-failed ]; then
+        check "Activation state consistent" "fail" "FAILED-CLOSED marker present"
+    else
+        check "Activation state consistent" "pass"
+    fi
+
+    # 8-9. Independently prove both transparent and SOCKS paths are Tor.
+    local direct_json socks_json
+    direct_json=$(env -u http_proxy -u https_proxy -u all_proxy -u no_proxy \
+        -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u NO_PROXY \
+        curl -4 --fail --silent --connect-timeout 10 --max-time 45 --noproxy '*' \
+        https://check.torproject.org/api/ip 2>/dev/null || true)
+    if jq -e '.IsTor == true' <<<"$direct_json" >/dev/null 2>&1; then
+        check "Transparent traffic uses Tor" "pass"
+    else
+        check "Transparent traffic uses Tor" "fail" "IsTor verification failed"
+    fi
+    socks_json=$(env -u http_proxy -u https_proxy -u all_proxy -u no_proxy \
+        -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u NO_PROXY \
+        curl -4 --fail --silent --connect-timeout 10 --max-time 45 \
+        --socks5-hostname "127.0.0.1:${SOCKS_PORT}" https://check.torproject.org/api/ip 2>/dev/null || true)
+    if jq -e '.IsTor == true' <<<"$socks_json" >/dev/null 2>&1; then
+        check "System Tor SOCKS usable" "pass"
+    else
+        check "System Tor SOCKS usable" "fail" "SOCKS IsTor verification failed"
+    fi
+
+    # 10. Prove an explicit external DNS destination is intercepted locally.
+    local dns_before dns_after desktop_user
+    desktop_user=$(getent passwd "$browser_uid" 2>/dev/null | cut -d: -f1)
+    dns_before=$(nft list chain inet opsec_strict output_nat 2>/dev/null | \
+        awk '/udp dport 53.*counter packets/ {for (i=1;i<=NF;i++) if ($i=="packets") {print $(i+1); exit}}')
+    if [ -n "$desktop_user" ] && [[ "$dns_before" =~ ^[0-9]+$ ]]; then
+        runuser -u "$desktop_user" -- python3 - <<'PY' >/dev/null 2>&1 || true
+import socket
+q = b'\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01'
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(3)
+s.sendto(q, ('1.1.1.1', 53))
+try:
+    s.recvfrom(2048)
+except OSError:
+    pass
+PY
+        dns_after=$(nft list chain inet opsec_strict output_nat 2>/dev/null | \
+            awk '/udp dport 53.*counter packets/ {for (i=1;i<=NF;i++) if ($i=="packets") {print $(i+1); exit}}')
+        if [[ "$dns_after" =~ ^[0-9]+$ ]] && [ "$dns_after" -gt "$dns_before" ]; then
+            check "External DNS intercepted" "pass" "nft redirect counter increased"
+        else
+            check "External DNS intercepted" "fail" "UDP/53 redirect counter did not increase"
+        fi
+    else
+        check "External DNS intercepted" "fail" "DNS redirect counter unavailable"
+    fi
+
+    # 11. Prove non-Tor UDP egress reaches the terminal reject rule.
+    local udp_before udp_after
+    udp_before=$(nft list chain inet opsec_strict output 2>/dev/null | \
+        awk '/meta l4proto udp.*counter packets/ {for (i=1;i<=NF;i++) if ($i=="packets") {value=$(i+1)}} END {print value}')
+    if [ -n "$desktop_user" ] && [[ "$udp_before" =~ ^[0-9]+$ ]]; then
+        runuser -u "$desktop_user" -- python3 - <<'PY' >/dev/null 2>&1 || true
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.sendto(b'opsec-negative-probe', ('1.1.1.1', 123))
+PY
+        udp_after=$(nft list chain inet opsec_strict output 2>/dev/null | \
+            awk '/meta l4proto udp.*counter packets/ {for (i=1;i<=NF;i++) if ($i=="packets") {value=$(i+1)}} END {print value}')
+        if [[ "$udp_after" =~ ^[0-9]+$ ]] && [ "$udp_after" -gt "$udp_before" ]; then
+            check "Non-Tor UDP blocked" "pass" "terminal reject counter increased"
+        else
+            check "Non-Tor UDP blocked" "fail" "terminal UDP reject counter did not increase"
+        fi
+    else
+        check "Non-Tor UDP blocked" "fail" "UDP reject counter unavailable"
     fi
 }
 

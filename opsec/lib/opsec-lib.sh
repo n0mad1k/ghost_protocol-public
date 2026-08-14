@@ -6,6 +6,7 @@ OPSEC_CONF="/etc/opsec/opsec.conf"
 OPSEC_COUNTRY_CODES="/etc/opsec/country-codes.conf"
 OPSEC_PROFILES_DIR="/etc/opsec/profiles"
 OPSEC_STATE_FILE="/var/run/opsec-advanced.enabled"
+OPSEC_ACTIVATING_FILE="/run/opsec/activation-in-progress"
 OPSEC_BOOT_MARKER="/etc/opsec/boot-advanced.enabled"
 
 # ─── COLOR OUTPUT ──────────────────────────────────────────────────────────────
@@ -46,15 +47,14 @@ HEADER
 PROFILE_NAME="${PROFILE_NAME:-default}"
 
 # ─── TOR SETTINGS ──────────────────────────────────────────────────────────────
-TOR_CIRCUIT_ROTATION="${TOR_CIRCUIT_ROTATION:-30}"
+TOR_CIRCUIT_ROTATION="${TOR_CIRCUIT_ROTATION:-}"
 TOR_BLACKLIST="${TOR_BLACKLIST:-}"
-TOR_STRICT_NODES="${TOR_STRICT_NODES:-1}"
+TOR_STRICT_NODES="${TOR_STRICT_NODES:-}"
 TOR_ISOLATION="${TOR_ISOLATION:-1}"
-TOR_PADDING="${TOR_PADDING:-1}"
+TOR_PADDING="${TOR_PADDING:-}"
 TOR_SOCKS_PORT="${TOR_SOCKS_PORT:-9050}"
 TOR_DNS_PORT="${TOR_DNS_PORT:-5353}"
-TOR_TRANS_PORT="${TOR_TRANS_PORT:-9040}"
-TOR_NUM_GUARDS="${TOR_NUM_GUARDS:-3}"
+TOR_NUM_GUARDS="${TOR_NUM_GUARDS:-}"
 TOR_SAFE_LOGGING="${TOR_SAFE_LOGGING:-1}"
 
 # ─── DNS SETTINGS ──────────────────────────────────────────────────────────────
@@ -72,8 +72,8 @@ MAC_INTERFACES="${MAC_INTERFACES:-auto}"
 MAC_VENDOR_SPOOF="${MAC_VENDOR_SPOOF:-}"
 
 # ─── HOSTNAME ──────────────────────────────────────────────────────────────────
-HOSTNAME_PATTERN="${HOSTNAME_PATTERN:-desktop}"
-HOSTNAME_CUSTOM_PREFIX="${HOSTNAME_CUSTOM_PREFIX:-}"
+HOSTNAME_PATTERN="${HOSTNAME_PATTERN:-random}"
+HOSTNAME_CUSTOM_PREFIX="${HOSTNAME_CUSTOM_PREFIX:-workstation}"
 
 # ─── SYSTEM HARDENING ──────────────────────────────────────────────────────────
 HARDEN_IPV6="${HARDEN_IPV6:-1}"
@@ -99,6 +99,7 @@ LOG_ROTATION_HOURS="${LOG_ROTATION_HOURS:-4}"
 # ─── TRAFFIC SHAPING ──────────────────────────────────────────────────────────
 TRAFFIC_JITTER_ENABLED="${TRAFFIC_JITTER_ENABLED:-0}"
 TRAFFIC_JITTER_MS="${TRAFFIC_JITTER_MS:-50}"
+TRAFFIC_BLEND_ENABLED="${TRAFFIC_BLEND_ENABLED:-0}"
 
 # ─── LEVEL TYPE ───────────────────────────────────────────────────────────────
 LEVEL_TYPE="${LEVEL_TYPE:-standard}"
@@ -112,7 +113,7 @@ BASE_IPV6_DISABLE="${BASE_IPV6_DISABLE:-1}"
 TOR_BRIDGE_MODE="${TOR_BRIDGE_MODE:-off}"
 TOR_BRIDGE_RELAY="${TOR_BRIDGE_RELAY:-}"
 
-# ─── SECURE DELETION ──────────────────────────────────────────────────────────
+# ─── ANTI-FORENSICS ──────────────────────────────────────────────────────────
 WIPE_METHOD="${WIPE_METHOD:-auto}"
 
 # ─── DEPLOYMENT LEVEL ─────────────────────────────────────────────────────────
@@ -128,6 +129,61 @@ EOF
     chmod 600 "$OPSEC_CONF"
 }
 
+opsec_validate_config_value() {
+    local key="$1" val="$2" port
+    case "$key" in
+        TOR_SOCKS_PORT|TOR_DNS_PORT|TOR_TRANS_PORT)
+            [[ "$val" =~ ^[0-9]+$ ]] && [ "$val" -ge 1 ] && [ "$val" -le 65535 ]
+            ;;
+        TOR_CIRCUIT_ROTATION)
+            [ -z "$val" ] || { [[ "$val" =~ ^[0-9]+$ ]] && [ "$val" -ge 10 ] && [ "$val" -le 86400 ]; }
+            ;;
+        TOR_NUM_GUARDS)
+            [ -z "$val" ] || { [[ "$val" =~ ^[0-9]+$ ]] && [ "$val" -ge 1 ] && [ "$val" -le 10 ]; }
+            ;;
+        TOR_BLACKLIST)
+            [ -z "$val" ] || [[ "$val" =~ ^[a-z]{2}(,[a-z]{2})*$ ]]
+            ;;
+        KILLSWITCH_EXTRA_PORTS)
+            [ -z "$val" ] && return 0
+            IFS=, read -ra entries <<<"$val"
+            for entry in "${entries[@]}"; do
+                [[ "$entry" =~ ^(tcp|udp):([0-9]+)$ ]] || return 1
+                port="${BASH_REMATCH[2]}"
+                [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || return 1
+            done
+            ;;
+        HOSTNAME_CUSTOM_PREFIX)
+            [[ "$val" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,38}[a-zA-Z0-9])?$ ]]
+            ;;
+        HOSTNAME_PATTERN) [[ "$val" =~ ^(desktop|random|custom)$ ]] ;;
+        TOR_BRIDGE_MODE) [[ "$val" =~ ^(off|obfs4|meek-azure|snowflake)$ ]] ;;
+        DNS_MODE) [[ "$val" =~ ^(tor|quad9|cloudflare|doh|dot|custom)$ ]] ;;
+        TOR_STRICT_NODES|TOR_PADDING)
+            [ -z "$val" ] || [[ "$val" =~ ^[01]$ ]]
+            ;;
+        TOR_ISOLATION|TOR_SAFE_LOGGING|KILLSWITCH_ALLOW_DHCP|KILLSWITCH_ALLOW_OPENVPN|KILLSWITCH_ALLOW_WIREGUARD|BASE_MAC_RANDOMIZE|BASE_IPV6_DISABLE|HARDEN_IPV6|HARDEN_SWAP|HARDEN_CORE_DUMPS|HARDEN_CLIPBOARD_CLEAR|HARDEN_SCREEN_LOCK|HARDEN_TIMEZONE_SPOOF|HARDEN_LOCALE_SPOOF|LEAK_WEBRTC_BLOCK|LEAK_USB_BLOCK|MONITOR_PROCESSES|MONITOR_LOG_ROTATION|TRAFFIC_JITTER_ENABLED|TRAFFIC_BLEND_ENABLED)
+            [[ "$val" =~ ^[01]$ ]]
+            ;;
+        MAC_INTERFACES)
+            [ "$val" = auto ] || [[ "$val" =~ ^[a-zA-Z0-9_.:-]+(,[a-zA-Z0-9_.:-]+)*$ ]]
+            ;;
+        MAC_VENDOR_SPOOF)
+            [ -z "$val" ] || [[ "$val" =~ ^([0-9A-Fa-f]{2}:){2}[0-9A-Fa-f]{2}$ ]]
+            ;;
+        PROFILE_NAME) [[ "$val" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]] ;;
+        HARDEN_SCREEN_LOCK_TIMEOUT) [[ "$val" =~ ^[0-9]+$ ]] && [ "$val" -ge 30 ] && [ "$val" -le 86400 ] ;;
+        LOG_ROTATION_HOURS) [[ "$val" =~ ^[0-9]+$ ]] && [ "$val" -ge 1 ] && [ "$val" -le 168 ] ;;
+        TRAFFIC_JITTER_MS) [[ "$val" =~ ^[0-9]+$ ]] && [ "$val" -le 5000 ] ;;
+        OPSEC_BANNER) [[ "$val" =~ ^(compact|full|auto|off)$ ]] ;;
+        WIDGET_THEME) [[ "$val" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]] ;;
+        DNS_CUSTOM_SERVERS) [ -z "$val" ] || [[ "$val" =~ ^[0-9A-Fa-f:.]+(,[0-9A-Fa-f:.]+)*$ ]] ;;
+        HARDEN_TIMEZONE_VALUE|HARDEN_LOCALE_VALUE) [[ "$val" =~ ^[a-zA-Z0-9_+./-]{1,64}$ ]] ;;
+        TOR_BRIDGE_RELAY) [ -z "$val" ] || [[ "$val" =~ ^[a-zA-Z0-9_=+.,:/\ -]{1,1024}$ ]] ;;
+        *) return 1 ;;
+    esac
+}
+
 opsec_set_value() {
     local key="$1" val="$2"
     if [ -z "$key" ]; then return 1; fi
@@ -138,6 +194,10 @@ opsec_set_value() {
     fi
     # Sanitize value: strip characters that could break shell quoting
     val=$(printf '%s' "$val" | tr -d '`$\\\"'"'" | tr -cd '[:print:]')
+    if ! opsec_validate_config_value "$key" "$val"; then
+        echo "[!] opsec_set_value: invalid value for ${key}" >&2
+        return 1
+    fi
     opsec_load_config
     eval "${key}=\"${val}\""
     opsec_save_config
@@ -154,6 +214,17 @@ opsec_get_value() {
     eval "echo \"\${${key}:-}\""
 }
 
+opsec_find_tor_service() {
+    local unit
+    for unit in tor@default.service tor.service; do
+        systemctl is-active "$unit" >/dev/null 2>&1 && { printf '%s\n' "$unit"; return 0; }
+    done
+    for unit in tor@default.service tor.service; do
+        systemctl cat "$unit" >/dev/null 2>&1 && { printf '%s\n' "$unit"; return 0; }
+    done
+    return 1
+}
+
 # ─── TORRC GENERATION ──────────────────────────────────────────────────────────
 
 opsec_generate_torrc() {
@@ -162,32 +233,53 @@ opsec_generate_torrc() {
 
     opsec_load_config || return 1
 
-    local torrc="/etc/tor/torrc"
+    local torrc_target="/etc/tor/torrc"
+    local torrc
+    torrc=$(mktemp /etc/tor/.opsec-torrc.XXXXXX) || return 1
+    local tor_service tor_user
+    tor_service=$(opsec_find_tor_service 2>/dev/null || true)
+    tor_user=$(systemctl show -p User --value "$tor_service" 2>/dev/null || true)
+    [ -n "$tor_user" ] || tor_user="tor"
+    if ! getent passwd "$tor_user" >/dev/null 2>&1; then tor_user="debian-tor"; fi
+    if ! getent passwd "$tor_user" >/dev/null 2>&1; then
+        echo "[$(date -Is)] [lib] Tor service account not found" >> "$_dbg" 2>/dev/null || true
+        rm -f "$torrc"
+        return 1
+    fi
+    local tor_data_dir
+    tor_data_dir=$(getent passwd "$tor_user" | awk -F: '{print $6}')
+    install -d -o "$tor_user" -g "$tor_user" -m 0700 "$tor_data_dir" || { rm -f "$torrc"; return 1; }
     local socks_port="${TOR_SOCKS_PORT:-9050}"
     local trans_port="${TOR_TRANS_PORT:-9040}"
     local dns_port="${TOR_DNS_PORT:-5353}"
-    local rotation="${TOR_CIRCUIT_ROTATION:-30}"
+    local rotation="${TOR_CIRCUIT_ROTATION:-}"
     local blacklist="${TOR_BLACKLIST:-}"
-    local strict="${TOR_STRICT_NODES:-1}"
+    local strict="${TOR_STRICT_NODES:-}"
     local isolation="${TOR_ISOLATION:-1}"
-    local padding="${TOR_PADDING:-1}"
-    local guards="${TOR_NUM_GUARDS:-3}"
+    local padding="${TOR_PADDING:-}"
+    local guards="${TOR_NUM_GUARDS:-}"
     local safe_log="${TOR_SAFE_LOGGING:-1}"
     echo "[$(date -Is)] [lib]   socks=${socks_port} trans=${trans_port} dns=${dns_port} blacklist=${blacklist}" >> "$_dbg" 2>/dev/null || true
 
     # Build SocksPort line with isolation flags
-    local socks_line="SocksPort ${socks_port}"
+    local socks_line="SocksPort 127.0.0.1:${socks_port}"
     if [ "$isolation" = "1" ]; then
         socks_line="${socks_line} IsolateDestAddr IsolateDestPort"
     fi
 
     # Build ExcludeExitNodes from blacklist
-    local exclude_line=""
+    local exit_policy=""
     if [ -n "$blacklist" ]; then
         local formatted
         formatted=$(echo "$blacklist" | sed 's/\([a-z][a-z]\)/{\1}/g; s/,/,/g')
-        exclude_line="ExcludeExitNodes ${formatted}"
+        exit_policy="ExcludeExitNodes ${formatted}"
+        [ -n "$strict" ] && exit_policy="${exit_policy}"$'\n'"StrictNodes ${strict}"
     fi
+
+    local rotation_line="" padding_line="" guards_line=""
+    [ -n "$rotation" ] && rotation_line="MaxCircuitDirtiness ${rotation}"
+    [ -n "$padding" ] && padding_line="ConnectionPadding ${padding}"
+    [ -n "$guards" ] && guards_line="NumEntryGuards ${guards}"
 
     local bridge_mode="${TOR_BRIDGE_MODE:-off}"
     local bridge_relay="${TOR_BRIDGE_RELAY:-}"
@@ -197,27 +289,27 @@ opsec_generate_torrc() {
 # Regenerate via: opsec-config.sh --apply
 
 # ─── SOCKS, TRANSPARENT PROXY & DNS ─────────────────────────────────────────
+User ${tor_user}
+DataDirectory ${tor_data_dir}
 ${socks_line}
-TransPort ${trans_port}
-DNSPort ${dns_port}
+TransPort 127.0.0.1:${trans_port}
+DNSPort 127.0.0.1:${dns_port}
 
 # ─── EXIT NODE EXCLUSION ────────────────────────────────────────────────────
-${exclude_line}
-StrictNodes ${strict}
+${exit_policy}
 
 # ─── CIRCUIT ROTATION ───────────────────────────────────────────────────────
-MaxCircuitDirtiness ${rotation}
+${rotation_line}
 
 # ─── TRAFFIC PADDING ────────────────────────────────────────────────────────
-ConnectionPadding ${padding}
+${padding_line}
 
 # ─── SAFE LOGGING ────────────────────────────────────────────────────────────
 SafeLogging ${safe_log}
-Log notice file /run/tor/notices.log
+Log notice syslog
 
 # ─── ENTRY GUARDS ───────────────────────────────────────────────────────────
-NumEntryGuards ${guards}
-UseEntryGuards 1
+${guards_line}
 
 EOF
 
@@ -261,9 +353,15 @@ BRIDGE_HEADER
     fi
 
     chmod 644 "$torrc"
-    echo "[$(date -Is)] [lib]   torrc written ($(wc -l < "$torrc") lines)" >> "$_dbg" 2>/dev/null || true
+    if ! tor --verify-config -f "$torrc" >> "$_dbg" 2>&1; then
+        echo "[$(date -Is)] [lib] generated torrc validation failed" >> "$_dbg" 2>/dev/null || true
+        rm -f "$torrc"
+        return 1
+    fi
+    mv -f "$torrc" "$torrc_target"
+    echo "[$(date -Is)] [lib]   torrc written ($(wc -l < "$torrc_target") lines)" >> "$_dbg" 2>/dev/null || true
     echo "[$(date -Is)] [lib]   torrc contents:" >> "$_dbg" 2>/dev/null || true
-    cat "$torrc" >> "$_dbg" 2>/dev/null || true
+    cat "$torrc_target" >> "$_dbg" 2>/dev/null || true
     echo "[$(date -Is)] [lib]   --- end torrc ---" >> "$_dbg" 2>/dev/null || true
 }
 
@@ -350,7 +448,7 @@ EOF
 # ─── STATE CHECKS ─────────────────────────────────────────────────────────────
 
 opsec_is_advanced() {
-    [ -f "$OPSEC_STATE_FILE" ]
+    [ -f "$OPSEC_STATE_FILE" ] || [ -f "$OPSEC_ACTIVATING_FILE" ]
 }
 
 opsec_is_boot_enabled() {

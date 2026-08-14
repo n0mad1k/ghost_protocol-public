@@ -46,6 +46,7 @@ apply_core_dumps() {
         sysctl -w fs.suid_dumpable=0 >/dev/null 2>&1
 
         # limits.d
+        mkdir -p /etc/security/limits.d
         cat > /etc/security/limits.d/opsec-coredump.conf << 'EOF'
 # OPSEC: Disable core dumps
 * hard core 0

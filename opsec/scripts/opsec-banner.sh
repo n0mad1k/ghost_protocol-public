@@ -1,16 +1,16 @@
 #!/bin/bash
 # /usr/local/bin/opsec-banner.sh — Terminal OPSEC Status Banner
-# Mirrors the Conky desktop widget layout and Widget theme colors
+# Mirrors the Conky desktop widget layout and APT theme colors
 # Modes: compact | full | off (configured via OPSEC_BANNER in opsec.conf)
 
 OPSEC_CONF="/etc/opsec/opsec.conf"
 [ -f "$OPSEC_CONF" ] && . "$OPSEC_CONF"
 
-BANNER_MODE="${OPSEC_BANNER:-compact}"
+BANNER_MODE="${OPSEC_BANNER:-full}"
 [ -n "$1" ] && BANNER_MODE="$1"
 [ "$BANNER_MODE" = "off" ] && exit 0
 
-# ─── Widget theme colors (matching Conky widget) ────────────────────────────
+# ─── APT THEME COLORS (matching Conky widget) ───────────────────────────────
 R=$'\e[0m'
 BLD=$'\e[1m'
 C0=$'\e[38;5;135m'     # ALERT/BAD    — #B55AFC purple
@@ -26,6 +26,10 @@ C9=$'\e[38;5;66m'      # METADATA     — #4A6A7A dark grey
 # ─── DETECT STATE ────────────────────────────────────────────────────────────
 ADVANCED=false
 [ -f /var/run/opsec-advanced.enabled ] && ADVANCED=true
+FAILED_CLOSED=false
+[ -f /run/opsec/activation-failed ] && FAILED_CLOSED=true
+ACTIVATION_UNSAFE=false
+[ -f /run/opsec/activation-unsafe ] && ACTIVATION_UNSAFE=true
 
 BREAKGLASS=false
 if [ -f /var/run/opsec-breakglass.active ]; then
@@ -94,7 +98,8 @@ render_compact() {
     local _tor_ok=false; ss -tln 2>/dev/null | grep -q ':9050 ' && _tor_ok=true
     local _ks_ok=false
     [ -f /var/run/opsec-killswitch.enabled ] && _ks_ok=true
-    iptables -L GP_FW >/dev/null 2>&1 && _ks_ok=true
+    iptables -L OPSEC_KILLSWITCH >/dev/null 2>&1 && _ks_ok=true
+    /usr/local/bin/opsec-killswitch.sh strict-status >/dev/null 2>&1 && _ks_ok=true
     local _dns_ok=false
     local _ds=$(awk '/^nameserver/{print $2;exit}' /etc/resolv.conf 2>/dev/null)
     case "$_ds" in 127.0.0.1|9.9.9.9|149.112.*|1.1.1.1|1.0.0.1) _dns_ok=true ;; esac
@@ -102,11 +107,21 @@ render_compact() {
     [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" = "1" ] && _v6_ok=true
 
     echo ""
-    if $BREAKGLASS; then
+    if $ACTIVATION_UNSAFE; then
+        echo "  ${C0}${BLD}CONTAINMENT UNVERIFIED${R}  ${C0}traffic may be exposed${R}"
+    elif $FAILED_CLOSED; then
+        echo "  ${C0}${BLD}FAILED-CLOSED${R}  ${C0}network blocked; run sudo opsec-mode off${R}"
+    elif $BREAKGLASS; then
         echo "  ${C0}${BLD}⚠ BREAKGLASS${R}  ${C0}KS bypassed${BG_REM:+ (${BG_REM})}${R}"
     fi
 
-    if $ADVANCED; then
+    if $ACTIVATION_UNSAFE; then
+        echo "  ${C5}${BLD}        OPSEC STATUS${R}"
+        echo "  ${C0}${BLD}   CONTAINMENT UNVERIFIED${R}"
+    elif $FAILED_CLOSED; then
+        echo "  ${C5}${BLD}        OPSEC STATUS${R}"
+        echo "  ${C0}${BLD}        FAILED-CLOSED${R}"
+    elif $ADVANCED; then
         local sigil="${C1}${BLD}▲ ADVANCED${R}"
         local ind="$(_si $_tor_ok TOR) $(_si $_ks_ok KS) $(_si $_dns_ok DNS) $(_si $MAC_OK MAC) $(_si $_v6_ok v6)"
         $VPN_OK && ind="$ind $(_si $VPN_OK VPN)"
@@ -200,8 +215,8 @@ render_full() {
             echo "  ${C6} DNSLK     ${C0}UNLOCKED${R}"
         fi
 
-        local _iso=$(grep "IsolateDestAddr" /etc/tor/torrc 2>/dev/null | head -1)
-        [ -n "$_iso" ] && echo "  ${C6} ISOL      ${C1}ACTIVE  ${C9}(stream isolation)${R}"
+        local _iso=$(grep "IsolateSOCKSAuth" /etc/tor/torrc 2>/dev/null | awk '{print $2}')
+        [ "$_iso" = "1" ] && echo "  ${C6} ISOL      ${C1}ACTIVE  ${C9}(stream isolation)${R}"
 
         local _pad=$(grep "ConnectionPadding" /etc/tor/torrc 2>/dev/null | awk '{print $2}')
         [ "$_pad" = "1" ] && echo "  ${C6} TPAD      ${C1}ACTIVE  ${C9}(traffic padding)${R}"

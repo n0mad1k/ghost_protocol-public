@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OPSEC Browser
+Comment=Disposable Tor Browser using the hardened system Tor service
+Exec=/usr/local/bin/opsec-browser
+Icon=tor-browser
+Terminal=false
+Categories=Network;WebBrowser;Security;
+Keywords=tor;opsec;browser;anonymous;

@@ -3,10 +3,12 @@
 # Uses pkexec directly on opsec-mode.sh for proper polkit policy matching
 OPSEC_MODE="/usr/local/bin/opsec-mode.sh"
 STATE_FILE="/var/run/opsec-advanced.enabled"
+FAILED_FILE="/run/opsec/activation-failed"
+ACTIVATING_FILE="/run/opsec/activation-in-progress"
 
 [ ! -x "$OPSEC_MODE" ] && exit 1
 
-if [ -f "$STATE_FILE" ]; then
+if [ -f "$STATE_FILE" ] || [ -f "$FAILED_FILE" ] || [ -f "$ACTIVATING_FILE" ]; then
     # Turning OFF — opsec-mode.sh off handles bootstrap stop signal internally
     if [ "$EUID" -eq 0 ] 2>/dev/null; then
         "$OPSEC_MODE" off

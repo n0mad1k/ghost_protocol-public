@@ -1,0 +1,35 @@
+#!/bin/bash
+# OPSEC-aware browser dispatcher. Uses Brave normally and a disposable
+# Tor Browser instance while ghost mode is active.
+
+set -u
+
+ACTIVE_FILE="/var/run/opsec-advanced.enabled"
+FAILED_FILE="/run/opsec/activation-failed"
+
+if [ -e "$FAILED_FILE" ]; then
+    echo "OPSEC is FAILED-CLOSED. Run: sudo opsec-mode off" >&2
+    exit 1
+fi
+
+if [ -e "$ACTIVE_FILE" ]; then
+    if ! systemctl --user is-active opsec-browser.service >/dev/null 2>&1; then
+        systemctl --user reset-failed opsec-browser.service >/dev/null 2>&1 || true
+        systemctl --user start opsec-browser.service || {
+            echo "Disposable OPSEC Browser failed to start." >&2
+            exit 1
+        }
+    fi
+    exit 0
+fi
+
+if command -v brave >/dev/null 2>&1; then
+    exec brave "$@"
+elif command -v brave-browser >/dev/null 2>&1; then
+    exec brave-browser "$@"
+elif command -v firefox >/dev/null 2>&1; then
+    exec firefox "$@"
+fi
+
+echo "No standard browser is installed." >&2
+exit 127

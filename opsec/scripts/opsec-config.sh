@@ -159,28 +159,28 @@ menu_tor() {
         local choice
         if $USE_WHIPTAIL; then
             choice=$(wt_menu "Tor Settings" \
-                "1" "Circuit Rotation: ${TOR_CIRCUIT_ROTATION:-30}s" \
-                "2" "Exit Blacklist: ${TOR_BLACKLIST:-us,gb,ca,au,nz}" \
-                "3" "Strict Nodes: $([ "${TOR_STRICT_NODES:-1}" = "1" ] && echo ON || echo OFF)" \
+                "1" "Circuit Rotation: ${TOR_CIRCUIT_ROTATION:-upstream}" \
+                "2" "Exit Blacklist: ${TOR_BLACKLIST:-none (upstream)}" \
+                "3" "Strict Nodes: $([ -z "${TOR_STRICT_NODES:-}" ] && echo UPSTREAM || { [ "$TOR_STRICT_NODES" = "1" ] && echo ON || echo OFF; })" \
                 "4" "Stream Isolation: $([ "${TOR_ISOLATION:-1}" = "1" ] && echo ON || echo OFF)" \
-                "5" "Traffic Padding: $([ "${TOR_PADDING:-1}" = "1" ] && echo ON || echo OFF)" \
+                "5" "Traffic Padding: $([ -z "${TOR_PADDING:-}" ] && echo UPSTREAM || { [ "$TOR_PADDING" = "1" ] && echo ON || echo OFF; })" \
                 "6" "SOCKS Port: ${TOR_SOCKS_PORT:-9050}" \
                 "7" "DNS Port: ${TOR_DNS_PORT:-5353}" \
-                "8" "Entry Guards: ${TOR_NUM_GUARDS:-3}" \
+                "8" "Entry Guards: ${TOR_NUM_GUARDS:-upstream}" \
                 "9" "Blacklist Editor...")
         else
             clear
             ansi_banner
             echo -e "${C_CYAN}━━━ ${C_MAG}TOR SETTINGS${C_CYAN} ━━━${C_RST}"
             echo ""
-            echo -e "  ${C_CYAN}1${C_RST}) Circuit Rotation: ${C_WHITE}${TOR_CIRCUIT_ROTATION:-30}s${C_RST}"
-            echo -e "  ${C_CYAN}2${C_RST}) Exit Blacklist: ${C_WHITE}${TOR_BLACKLIST:-us,gb,ca,au,nz}${C_RST}"
-            ansi_toggle "3) Strict Nodes" "${TOR_STRICT_NODES:-1}"
+            echo -e "  ${C_CYAN}1${C_RST}) Circuit Rotation: ${C_WHITE}${TOR_CIRCUIT_ROTATION:-upstream}${C_RST}"
+            echo -e "  ${C_CYAN}2${C_RST}) Exit Blacklist: ${C_WHITE}${TOR_BLACKLIST:-none (upstream)}${C_RST}"
+            [ -z "${TOR_STRICT_NODES:-}" ] && echo -e "  ${C_CYAN}3${C_RST}) Strict Nodes: ${C_WHITE}UPSTREAM${C_RST}" || ansi_toggle "3) Strict Nodes" "$TOR_STRICT_NODES"
             ansi_toggle "4) Stream Isolation" "${TOR_ISOLATION:-1}"
-            ansi_toggle "5) Traffic Padding" "${TOR_PADDING:-1}"
+            [ -z "${TOR_PADDING:-}" ] && echo -e "  ${C_CYAN}5${C_RST}) Traffic Padding: ${C_WHITE}UPSTREAM${C_RST}" || ansi_toggle "5) Traffic Padding" "$TOR_PADDING"
             echo -e "  ${C_CYAN}6${C_RST}) SOCKS Port: ${C_WHITE}${TOR_SOCKS_PORT:-9050}${C_RST}"
             echo -e "  ${C_CYAN}7${C_RST}) DNS Port: ${C_WHITE}${TOR_DNS_PORT:-5353}${C_RST}"
-            echo -e "  ${C_CYAN}8${C_RST}) Entry Guards: ${C_WHITE}${TOR_NUM_GUARDS:-3}${C_RST}"
+            echo -e "  ${C_CYAN}8${C_RST}) Entry Guards: ${C_WHITE}${TOR_NUM_GUARDS:-upstream}${C_RST}"
             echo -e "  ${C_CYAN}9${C_RST}) ${C_MAG}Blacklist Editor...${C_RST}"
             echo -e "  ${C_RED}0${C_RST}) ${C_DIM}Back${C_RST}"
             echo ""
@@ -189,9 +189,9 @@ menu_tor() {
         fi
 
         case "$choice" in
-            1) local val; val=$(ansi_input "Circuit rotation (seconds)" "${TOR_CIRCUIT_ROTATION:-30}")
+            1) local val; val=$(ansi_input "Circuit rotation (seconds; blank = Tor default)" "${TOR_CIRCUIT_ROTATION:-}")
                opsec_set_value TOR_CIRCUIT_ROTATION "$val" ;;
-            2) local val; val=$(ansi_input "Blacklist (comma-separated country codes)" "${TOR_BLACKLIST:-us,gb,ca,au,nz}")
+            2) local val; val=$(ansi_input "Blacklist (blank = Tor default)" "${TOR_BLACKLIST:-}")
                opsec_set_value TOR_BLACKLIST "$val" ;;
             3) wt_toggle TOR_STRICT_NODES "Strict Nodes" ;;
             4) wt_toggle TOR_ISOLATION "Stream Isolation" ;;
@@ -200,7 +200,7 @@ menu_tor() {
                opsec_set_value TOR_SOCKS_PORT "$val" ;;
             7) local val; val=$(ansi_input "DNS port" "${TOR_DNS_PORT:-5353}")
                opsec_set_value TOR_DNS_PORT "$val" ;;
-            8) local val; val=$(ansi_input "Number of entry guards" "${TOR_NUM_GUARDS:-3}")
+            8) local val; val=$(ansi_input "Number of entry guards (blank = Tor default)" "${TOR_NUM_GUARDS:-}")
                opsec_set_value TOR_NUM_GUARDS "$val" ;;
             9) menu_blacklist_editor ;;
             0|"") return ;;
@@ -366,7 +366,7 @@ menu_hostname() {
         echo ""
         echo -e "  ${C_CYAN}1${C_RST}) Pattern: ${C_WHITE}${HOSTNAME_PATTERN:-desktop}${C_RST}"
         echo -e "     ${C_DIM}desktop = desktop-XXXX | random = XXXXXXXX | custom = PREFIX-XXXX${C_RST}"
-        echo -e "  ${C_CYAN}2${C_RST}) Custom Prefix: ${C_WHITE}${HOSTNAME_CUSTOM_PREFIX:-}${C_RST}"
+        echo -e "  ${C_CYAN}2${C_RST}) Custom Prefix: ${C_WHITE}${HOSTNAME_CUSTOM_PREFIX:-workstation}${C_RST}"
         echo -e "  ${C_RED}0${C_RST}) ${C_DIM}Back${C_RST}"
         echo ""
         echo -ne "${C_BLUE}▸ ${C_RST}"
@@ -376,7 +376,7 @@ menu_hostname() {
         case "$choice" in
             1) local val; val=$(ansi_input "Pattern (desktop/random/custom)" "${HOSTNAME_PATTERN:-desktop}")
                opsec_set_value HOSTNAME_PATTERN "$val" ;;
-            2) local val; val=$(ansi_input "Custom prefix" "${HOSTNAME_CUSTOM_PREFIX:-}")
+            2) local val; val=$(ansi_input "Custom prefix" "${HOSTNAME_CUSTOM_PREFIX:-workstation}")
                opsec_set_value HOSTNAME_CUSTOM_PREFIX "$val" ;;
             0|"") return ;;
         esac
@@ -724,7 +724,7 @@ do_apply() {
 
         # Reapply kill switch
         opsec_info "Reapplying kill switch..."
-        /usr/local/bin/opsec-killswitch.sh on 2>/dev/null || true
+        /usr/local/bin/opsec-killswitch.sh strict-on 2>/dev/null || true
     fi
 
     # Regenerate conky widget with current theme

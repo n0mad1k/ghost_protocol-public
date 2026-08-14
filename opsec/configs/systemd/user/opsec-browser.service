@@ -1,0 +1,22 @@
+[Unit]
+Description=Disposable OPSEC Tor Browser
+ConditionPathExists=/var/run/opsec-advanced.enabled
+
+[Service]
+Type=exec
+ExecStart=/usr/local/libexec/opsec-browser-run.sh
+RuntimeDirectory=opsec-browser
+RuntimeDirectoryMode=0700
+UMask=0077
+KillMode=control-group
+TimeoutStopSec=20
+TimeoutStartSec=45
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

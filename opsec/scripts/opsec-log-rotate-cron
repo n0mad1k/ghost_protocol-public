@@ -1,0 +1,6 @@
+# /etc/cron.d/opsec-log-rotate — Secure log rotation
+# Interval synced from LOG_ROTATION_HOURS in /etc/opsec/opsec.conf (default: 4h)
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+0 */4 * * * root /usr/local/bin/opsec-log-rotate.sh >/dev/null 2>&1
