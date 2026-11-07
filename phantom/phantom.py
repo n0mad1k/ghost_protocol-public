@@ -274,6 +274,7 @@ def run_playbook(playbook_path, config, extra_vars=None):
         with open(vars_file, "w") as f:
             for k, v in config.items():
                 f.write(f"{k}: {json.dumps(v)}\n")
+    os.chmod(vars_file, 0o600)
 
     cmd.extend(["-e", f"@{vars_file}"])
 
@@ -408,6 +409,9 @@ def save_deploy_info(config):
         print(f"  {WHITE}Admin:{RESET}     {config['cloud_admin_user']}")
     if config.get("vault_admin_token"):
         print(f"  {WHITE}Token:{RESET}     saved to owner-only credentials file")
+    if config.get("server_type") == "tak":
+        print(f"  {WHITE}TAK package:{RESET} {config.get('tak_artifact_dir', 'owner-only artifact directory')}")
+        print(f"  {WHITE}TAK passwords:{RESET} saved to owner-only credentials file")
     print(f"\n  {CYAN}Credentials saved to:{RESET} {info_file}")
     if C2_INTEGRATED:
         dim("(c2itall integrated mode)")
@@ -455,6 +459,12 @@ def _write_info_file(info_file, config, deployment_id, label, target, ssh_key,
             f.write(f"Vaultwarden Token: {config['vault_admin_token']}\n")
         if config.get("email_first_user"):
             f.write(f"Email User: {config['email_first_user']}\n")
+        if config.get("server_type") == "tak":
+            artifact_dir = config.get("tak_artifact_dir", "")
+            f.write(f"TAK Connection Package: {artifact_dir}/tak-connection-{deployment_id}.zip\n")
+            f.write(f"TAK Admin Certificate: {artifact_dir}/tak-admin-{deployment_id}.p12\n")
+            f.write(f"TAK Client Password: {config.get('tak_cert_password', '')}\n")
+            f.write(f"TAK CA Password: {config.get('tak_ca_password', '')}\n")
         f.write(f"\nGenerated at: {config['timestamp']}\n")
 
 
