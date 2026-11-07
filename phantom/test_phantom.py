@@ -235,11 +235,11 @@ def test_playbook_syntax():
     cloud_install = yaml.safe_load(
         (PLAYBOOKS_DIR / "cloud/tasks/install.yml").read_text())
     cloud_dependencies = cloud_install[0].get("apt", {}).get("name", [])
-    if "bzip2" in cloud_dependencies:
-        passed("playbooks/cloud — Nextcloud tarball extractor is installed")
+    if {"bzip2", "python3-pymysql"}.issubset(cloud_dependencies):
+        passed("playbooks/cloud — archive and database runtime dependencies are installed")
         results["pass"] += 1
     else:
-        failed("playbooks/cloud — bzip2 is required for the Nextcloud tarball")
+        failed("playbooks/cloud — Nextcloud archive or database dependency is missing")
         results["fail"] += 1
 
     return results
