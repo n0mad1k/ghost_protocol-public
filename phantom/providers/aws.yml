@@ -52,6 +52,8 @@
         name: "ph-{{ deploy_id }}"
         description: "phantom deployment {{ deploy_id }}"
         region: "{{ aws_region }}"
+        tags:
+          deployment_id: "{{ deployment_id }}"
         rules:
           - proto: tcp
             from_port: 22
@@ -75,6 +77,8 @@
         image_id: "{{ ec2_ami }}"
         region: "{{ aws_region }}"
         security_group: "{{ sg_result.group_id }}"
+        tags:
+          deployment_id: "{{ deployment_id }}"
         wait: true
         state: running
       register: ec2_result

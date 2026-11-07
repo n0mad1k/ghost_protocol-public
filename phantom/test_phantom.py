@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 import yaml
 from io import StringIO
@@ -405,6 +406,46 @@ def test_integrated_provider_dispatch():
         results["pass"] += 1
     else:
         failed("Adapter deployment did not preserve the service pipeline")
+        results["fail"] += 1
+
+    class TransitionBridge:
+        def __init__(self):
+            self.calls = 0
+
+        def deploy_with_legacy(self, value, legacy):
+            self.calls += 1
+            value.setdefault("region", value["aws_region"])
+            return legacy(value)
+
+    bridge = TransitionBridge()
+    bridge_config = {
+        "provider": "aws", "provider_workload": "phantom",
+        "deployment_id": "bridgetest", "server_type": "vpn",
+        "aws_region": "us-east-1", "ssh_after_deploy": False,
+    }
+
+    def bridge_playbook(playbook_path, value):
+        if Path(playbook_path).parent == phantom.PROVIDERS_DIR:
+            output = Path(value["_host_output_file"])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text("1.1.1.2")
+        return True
+
+    with tempfile.TemporaryDirectory() as temporary, \
+         patch.object(phantom, "WORK_DIR", Path(temporary)), \
+         patch.object(phantom, "_provider_adapter", return_value=bridge), \
+         patch.object(phantom, "generate_ssh_key", return_value="/tmp/bridge-key"), \
+         patch.object(phantom, "run_playbook", side_effect=bridge_playbook) as legacy, \
+         patch.object(phantom, "save_deploy_info"), \
+         patch("builtins.input", return_value="y"), \
+         patch("sys.stdout", new_callable=StringIO):
+        bridged = phantom.deploy("vpn", bridge_config)
+    if (bridged and bridge.calls == 1 and legacy.call_count == 3 and
+            bridge_config.get("target_host") == "1.1.1.2"):
+        passed("Transition adapter calls the preserved provider playbook once")
+        results["pass"] += 1
+    else:
+        failed("Transition adapter did not preserve the provider lifecycle")
         results["fail"] += 1
 
     adapter.cleanup.return_value = True

@@ -435,10 +435,14 @@ def _write_info_file(info_file, config, deployment_id, label, target, ssh_key,
         f.write(f"provider: {config.get('provider', 'unknown')}\n")
         f.write(f"deployment_id: {deployment_id}\n")
         f.write(f"deployment_type: phantom_{config.get('server_type', 'unknown')}\n")
+        f.write(f"provider_workload: {config.get('provider_workload', 'phantom')}\n")
         f.write(f"instance_name: {label}\n")
+        f.write(f"phantom_name: {label}\n")
         if config.get("domain"):
             f.write(f"domain: {config['domain']}\n")
-        if config.get("region"):
+        if config.get("provider") == "aws" and config.get("region"):
+            f.write(f"aws_region: {config['region']}\n")
+        elif config.get("region"):
             f.write(f"linode_region: {config['region']}\n")
         if ssh_key:
             f.write(f"ssh_key_path: {ssh_key}\n")
@@ -611,12 +615,17 @@ def _integrated_provider_tools():
     return available_providers, provider_dispatcher
 
 
-def _provider_adapter(provider):
+def _provider_adapter(provider, workload="phantom"):
     tools = _integrated_provider_tools()
     if tools is None:
         return None
     dispatcher = tools[1](provider)
-    return dispatcher.route("phantom") if dispatcher is not None else None
+    return dispatcher.route(workload) if dispatcher is not None else None
+
+
+def _is_legacy_bridge(adapter):
+    """Recognize an explicit transition bridge without matching loose mocks."""
+    return callable(getattr(type(adapter), "deploy_with_legacy", None))
 
 def select_provider():
     """Select deployment target: cloud provider or local/existing server."""
@@ -654,8 +663,8 @@ def gather_credentials(provider, config, service_type=None):
     Uses per-service recommended plans when available.
     Press Enter at any prompt to accept the stored default.
     """
-    adapter = _provider_adapter(provider)
-    if adapter is not None:
+    adapter = _provider_adapter(provider, "phantom")
+    if adapter is not None and not _is_legacy_bridge(adapter):
         config.update(adapter.gather_config())
         config.update(provider=provider, provider_workload="phantom")
         return True
@@ -782,7 +791,12 @@ def teardown_instance(config_or_id):
     deployment_id = config.get("deployment_id")
     label = instance_label(deployment_id)
 
-    adapter = _provider_adapter(provider)
+    workload = config.get("provider_workload")
+    if workload not in ("phantom", "chat"):
+        workload = "chat" if str(config.get("deployment_type", "")).startswith(
+            "chat_") else "phantom"
+        config["provider_workload"] = workload
+    adapter = _provider_adapter(provider, workload)
     if adapter is not None:
         warn(f"Tearing down {provider} instance: {label}")
         if not adapter.cleanup(config):
@@ -975,7 +989,9 @@ def deploy(server_type, config, service_playbook=None):
     config["server_type"] = server_type
     config.setdefault("deployment_id", generate_id())
     deployment_id = config["deployment_id"]
-    adapter = _provider_adapter(config.get("provider"))
+    workload = config.get("provider_workload", "phantom")
+    adapter = _provider_adapter(config.get("provider"), workload)
+    legacy_bridge = _is_legacy_bridge(adapter)
     is_cloud = config.get("provider") in ("linode", "aws") or adapter is not None
 
     # Summary
@@ -1003,20 +1019,29 @@ def deploy(server_type, config, service_playbook=None):
         return False
 
     # Generate SSH key if needed
-    if adapter is None and config.get("provider") not in ("local",) and not config.get("ssh_key"):
+    if ((adapter is None or legacy_bridge) and
+            config.get("provider") not in ("local",) and
+            not config.get("ssh_key")):
         config["ssh_key"] = generate_ssh_key(deployment_id)
 
     # ── Provision cloud instance ──────────────────────────────────────────
     if is_cloud:
         info(f"Provisioning {config['provider']} instance...")
-        if adapter is not None:
+        if adapter is not None and not legacy_bridge:
             provisioned = adapter.deploy(config)
             host_file = None
         else:
             provider_playbook = PROVIDERS_DIR / f"{config['provider']}.yml"
-            host_file = WORK_DIR / deployment_id / "provisioned_host"
-            config["_host_output_file"] = str(host_file)
-            provisioned = run_playbook(provider_playbook, config)
+            host_file = (None if config["provider"] == "flokinet" else
+                         WORK_DIR / deployment_id / "provisioned_host")
+            if host_file is not None:
+                config["_host_output_file"] = str(host_file)
+            if legacy_bridge:
+                provisioned = adapter.deploy_with_legacy(
+                    config,
+                    lambda value: run_playbook(provider_playbook, value))
+            else:
+                provisioned = run_playbook(provider_playbook, config)
         if not provisioned:
             err("Provisioning failed.")
             # Instance may already exist (API call succeeded, SSH wait timed out)
