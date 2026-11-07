@@ -957,7 +957,7 @@ def manage_menu():
 
 # ─── Deployment Orchestration ───────────────────────────────────────────────
 
-def deploy(server_type, config):
+def deploy(server_type, config, service_playbook=None):
     """Full deployment pipeline: summarize -> confirm -> provision -> configure.
 
     Follows c2itall pattern: on ANY failure after provisioning, auto-teardown.
@@ -1045,7 +1045,9 @@ def deploy(server_type, config):
             "all_in_one": PLAYBOOKS_DIR / "all_in_one/main.yml",
         }
 
-        playbook = playbook_map.get(server_type)
+        playbook = Path(service_playbook) if service_playbook else playbook_map.get(server_type)
+        if service_playbook and not playbook.is_file():
+            raise RuntimeError(f"Service playbook not found: {playbook}")
         if playbook:
             info(f"Configuring {server_type}...")
             if not run_playbook(playbook, config):
