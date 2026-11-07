@@ -264,6 +264,18 @@ def test_gather_config():
             "mail.test.local",          # domain
             "admin@test.local",         # first user
         ],
+        "all_in_one": [
+            "y",                 # acknowledge single-server risks
+            "2,5",               # WireGuard + Vaultwarden
+            "all.test.local",    # base domain
+            "",                  # WireGuard port
+            "1",                 # WireGuard client count
+            "",                  # WireGuard DNS
+            "",                  # WireGuard allowed IPs
+            "",                  # WireGuard subnet
+            "",                  # Vaultwarden token (auto-generate)
+            "n",                 # Vaultwarden signups
+        ],
     }
 
     for mod_name, inputs in test_inputs.items():
@@ -297,6 +309,10 @@ def test_gather_config():
                     result = mod.gather_config(config)
 
             if result is not None:
+                if mod_name == "all_in_one":
+                    assert result["services"] == ["vpn", "vault"]
+                    assert result["domain"] == "all.test.local"
+                    assert result["service_domains"]["vault"] == "vault.all.test.local"
                 keys = [k for k in result.keys() if k != "deployment_id"]
                 passed(f"{mod_name} — config collected: {', '.join(keys[:6])}")
                 results["pass"] += 1

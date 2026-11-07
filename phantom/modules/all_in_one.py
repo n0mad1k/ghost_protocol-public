@@ -63,7 +63,9 @@ def gather_config(config):
         try:
             idx = int(s) - 1
             if 0 <= idx < len(SERVICES):
-                selected_services.append(SERVICES[idx][0])
+                service = SERVICES[idx][0]
+                if service not in selected_services:
+                    selected_services.append(service)
         except ValueError:
             pass
 
@@ -72,6 +74,7 @@ def gather_config(config):
         return None
 
     config["services"] = selected_services
+    config["service_domains"] = {}
     config["all_in_one"] = True
 
     # Base domain or IP for nginx vhosts
@@ -125,6 +128,7 @@ def gather_config(config):
                 config = mod.gather_config(config)
                 if config is None:
                     return None
+                config["service_domains"][svc] = config.get("domain", base_domain)
         except ImportError:
             pass  # Module not yet loaded, skip
     # Restore base domain
