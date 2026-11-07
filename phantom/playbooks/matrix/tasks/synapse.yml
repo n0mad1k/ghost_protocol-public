@@ -56,6 +56,7 @@
     group: matrix-synapse
     mode: "0640"
   notify: restart synapse
+  no_log: true
 
 - name: Clear conflicting conf.d configurations
   shell: |
@@ -102,3 +103,4 @@
     - admin_create.rc != 0
     - "'User ID already taken' not in admin_create.stderr"
   changed_when: "'User ID already taken' not in admin_create.stderr"
+  no_log: true

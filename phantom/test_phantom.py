@@ -404,6 +404,34 @@ def test_integrated_provider_dispatch():
     return results
 
 
+def test_secret_display_redaction():
+    header("Test 5c: Secret Display Redaction")
+    import phantom
+    results = {"pass": 0, "fail": 0}
+    secret = "matrix-password-must-not-print"
+    config = {
+        "provider": "existing", "deployment_id": "redactiontest",
+        "target_host": "192.0.2.10", "ssh_key": "/tmp/test-key",
+        "matrix_admin_password": secret, "matrix_signing_key": "signing-secret",
+        "matrix_form_secret": "form-secret", "matrix_macaroon_secret": "macaroon-secret",
+        "tailscale_auth_key": "tskey-auth-must-not-print",
+    }
+    with patch.object(phantom, "_provider_adapter", return_value=None), \
+         patch("builtins.input", return_value="n"), \
+         patch("sys.stdout", new_callable=StringIO) as output:
+        deployed = phantom.deploy("matrix", config)
+    rendered = output.getvalue()
+    if not deployed and secret not in rendered and "signing-secret" not in rendered \
+            and "tskey-auth-must-not-print" not in rendered \
+            and rendered.count("<redacted>") >= 5:
+        passed("Deployment summaries redact Matrix credentials, auth keys and secrets")
+        results["pass"] += 1
+    else:
+        failed("Deployment summary exposed a Matrix credential or secret")
+        results["fail"] += 1
+    return results
+
+
 # ─── Test 6: SSH Key Generation ──────────────────────────────────────────────
 
 def test_ssh_keygen():
@@ -672,6 +700,7 @@ def main():
         test_gather_config,
         test_deploy_pipeline,
         test_integrated_provider_dispatch,
+        test_secret_display_redaction,
         test_ssh_keygen,
         test_interactive_flow,
         test_deployment_discovery,

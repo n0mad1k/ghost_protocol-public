@@ -61,6 +61,13 @@ WHITE = "\033[38;5;255m"
 GREY = "\033[38;5;244m"
 
 
+def _display_value(key, value):
+    """Prevent credentials and generated service secrets from reaching stdout."""
+    lowered = str(key).lower()
+    sensitive = ("password", "secret", "token", "private_key", "signing_key", "auth_key")
+    return "<redacted>" if any(part in lowered for part in sensitive) else value
+
+
 def ok(msg):
     print(f"{GREEN}[+]{RESET} {msg}")
 
@@ -396,11 +403,11 @@ def save_deploy_info(config):
     if config.get("matrix_admin_user"):
         print(f"  {WHITE}Admin:{RESET}     {config['matrix_admin_user']}")
     if config.get("matrix_admin_password"):
-        print(f"  {WHITE}Password:{RESET}  {config['matrix_admin_password']}")
+        print(f"  {WHITE}Password:{RESET}  saved to owner-only credentials file")
     if config.get("cloud_admin_user"):
         print(f"  {WHITE}Admin:{RESET}     {config['cloud_admin_user']}")
     if config.get("vault_admin_token"):
-        print(f"  {WHITE}Token:{RESET}     {config['vault_admin_token']}")
+        print(f"  {WHITE}Token:{RESET}     saved to owner-only credentials file")
     print(f"\n  {CYAN}Credentials saved to:{RESET} {info_file}")
     if C2_INTEGRATED:
         dim("(c2itall integrated mode)")
@@ -977,7 +984,7 @@ def deploy(server_type, config):
         if k not in ("deployment_id", "server_type", "provider", "target_host",
                       "domain", "api_token", "aws_access_key", "aws_secret_key",
                       "ssh_key", "ssh_user", "timestamp"):
-            print(f"  {WHITE}{k}:{RESET} {v}")
+            print(f"  {WHITE}{k}:{RESET} {_display_value(k, v)}")
     print(f"{CYAN}{'─' * 60}{RESET}")
 
     confirm = input(f"\n  {MAGENTA}Deploy? [y/N]:{RESET} ").strip().lower()
