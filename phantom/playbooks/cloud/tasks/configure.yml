@@ -95,6 +95,12 @@
     mode: "0644"
   notify: restart php-fpm
 
+- name: Enable APCu for Nextcloud CLI maintenance
+  lineinfile:
+    path: "/etc/php/{{ php_ver }}/mods-available/apcu.ini"
+    line: "apc.enable_cli=1"
+    insertafter: EOF
+
 - name: Flush handlers to restart PHP-FPM
   meta: flush_handlers
 

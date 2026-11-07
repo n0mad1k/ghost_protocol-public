@@ -235,11 +235,13 @@ def test_playbook_syntax():
     cloud_install = yaml.safe_load(
         (PLAYBOOKS_DIR / "cloud/tasks/install.yml").read_text())
     cloud_dependencies = cloud_install[0].get("apt", {}).get("name", [])
-    if {"bzip2", "python3-pymysql"}.issubset(cloud_dependencies):
-        passed("playbooks/cloud — archive and database runtime dependencies are installed")
+    cloud_configure = (PLAYBOOKS_DIR / "cloud/tasks/configure.yml").read_text()
+    if ({"bzip2", "python3-pymysql"}.issubset(cloud_dependencies)
+            and "apc.enable_cli=1" in cloud_configure):
+        passed("playbooks/cloud — archive, database and APCu CLI runtimes are configured")
         results["pass"] += 1
     else:
-        failed("playbooks/cloud — Nextcloud archive or database dependency is missing")
+        failed("playbooks/cloud — a required Nextcloud runtime is missing")
         results["fail"] += 1
 
     return results
