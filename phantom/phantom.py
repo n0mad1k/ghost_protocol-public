@@ -582,19 +582,52 @@ SERVICE_PLANS = {
 
 # ─── Provider Selection ─────────────────────────────────────────────────────
 
+def _integrated_provider_tools():
+    """Load c2itall's provider registry only in explicitly integrated mode."""
+    if not C2_INTEGRATED:
+        return None
+    root = str(C2_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from utils.provider_utils import available_providers
+    from utils.provider_registry import provider_dispatcher
+    return available_providers, provider_dispatcher
+
+
+def _provider_adapter(provider):
+    tools = _integrated_provider_tools()
+    if tools is None:
+        return None
+    dispatcher = tools[1](provider)
+    return dispatcher.route("phantom") if dispatcher is not None else None
+
 def select_provider():
     """Select deployment target: cloud provider or local/existing server."""
+    cloud = ["linode", "aws", "flokinet"]
+    tools = _integrated_provider_tools()
+    if tools is not None:
+        available = tools[0]("phantom", legacy_fallback=True)
+        cloud = ([provider for provider in cloud if provider in available] +
+                 [provider for provider in available if provider not in cloud])
+    labels = {"linode": "Linode", "aws": "AWS (EC2)",
+              "flokinet": "FlokiNET (pre-provisioned)", "azure": "Azure"}
+    targets = cloud + ["existing", "local"]
     print(f"\n{CYAN}  Select deployment target:{RESET}")
-    print(f"  {WHITE}1{RESET}) Linode")
-    print(f"  {WHITE}2{RESET}) AWS (EC2)")
-    print(f"  {WHITE}3{RESET}) FlokiNET (pre-provisioned)")
-    print(f"  {WHITE}4{RESET}) Existing server (SSH)")
-    print(f"  {WHITE}5{RESET}) Local (this machine)")
+    for index, provider in enumerate(targets, 1):
+        label = labels.get(provider, provider.capitalize())
+        if provider == "existing":
+            label = "Existing server (SSH)"
+        elif provider == "local":
+            label = "Local (this machine)"
+        print(f"  {WHITE}{index}{RESET}) {label}")
     print()
 
     choice = input(f"  {MAGENTA}>{RESET} ").strip()
-    providers = {"1": "linode", "2": "aws", "3": "flokinet", "4": "existing", "5": "local"}
-    return providers.get(choice)
+    try:
+        index = int(choice) - 1
+    except ValueError:
+        return None
+    return targets[index] if 0 <= index < len(targets) else None
 
 
 def gather_credentials(provider, config, service_type=None):
@@ -604,6 +637,12 @@ def gather_credentials(provider, config, service_type=None):
     Uses per-service recommended plans when available.
     Press Enter at any prompt to accept the stored default.
     """
+    adapter = _provider_adapter(provider)
+    if adapter is not None:
+        config.update(adapter.gather_config())
+        config.update(provider=provider, provider_workload="phantom")
+        return True
+
     defaults = _load_provider_defaults()
 
     if provider == "linode":
@@ -725,6 +764,16 @@ def teardown_instance(config_or_id):
     provider = config.get("provider")
     deployment_id = config.get("deployment_id")
     label = instance_label(deployment_id)
+
+    adapter = _provider_adapter(provider)
+    if adapter is not None:
+        warn(f"Tearing down {provider} instance: {label}")
+        if not adapter.cleanup(config):
+            err(f"Adapter cleanup failed for {provider}: {label}")
+            return False
+        ok(f"Instance {label} destroyed.")
+        _archive_deployment(deployment_id)
+        return True
 
     cleanup_map = {
         "linode": PROVIDERS_DIR / "linode_cleanup.yml",
@@ -909,7 +958,8 @@ def deploy(server_type, config):
     config["server_type"] = server_type
     config.setdefault("deployment_id", generate_id())
     deployment_id = config["deployment_id"]
-    is_cloud = config.get("provider") in ("linode", "aws")
+    adapter = _provider_adapter(config.get("provider"))
+    is_cloud = config.get("provider") in ("linode", "aws") or adapter is not None
 
     # Summary
     print(f"\n{CYAN}{'─' * 60}{RESET}")
@@ -933,33 +983,40 @@ def deploy(server_type, config):
     confirm = input(f"\n  {MAGENTA}Deploy? [y/N]:{RESET} ").strip().lower()
     if confirm != "y":
         warn("Deployment cancelled.")
-        return
+        return False
 
     # Generate SSH key if needed
-    if config.get("provider") not in ("local",) and not config.get("ssh_key"):
+    if adapter is None and config.get("provider") not in ("local",) and not config.get("ssh_key"):
         config["ssh_key"] = generate_ssh_key(deployment_id)
 
     # ── Provision cloud instance ──────────────────────────────────────────
     if is_cloud:
-        provider_playbook = PROVIDERS_DIR / f"{config['provider']}.yml"
-        host_file = WORK_DIR / deployment_id / "provisioned_host"
-        config["_host_output_file"] = str(host_file)
         info(f"Provisioning {config['provider']} instance...")
-        if not run_playbook(provider_playbook, config):
+        if adapter is not None:
+            provisioned = adapter.deploy(config)
+            host_file = None
+        else:
+            provider_playbook = PROVIDERS_DIR / f"{config['provider']}.yml"
+            host_file = WORK_DIR / deployment_id / "provisioned_host"
+            config["_host_output_file"] = str(host_file)
+            provisioned = run_playbook(provider_playbook, config)
+        if not provisioned:
             err("Provisioning failed.")
             # Instance may already exist (API call succeeded, SSH wait timed out)
             # Always attempt teardown — cleanup playbook uses ignore_errors
             warn("Attempting teardown in case instance was created...")
             teardown_instance(config)
-            return
+            return False
         # Read back the provisioned host IP
-        if host_file.exists():
+        if host_file is None:
+            ok(f"Provisioned server: {config['target_host']}")
+        elif host_file.exists():
             config["target_host"] = host_file.read_text().strip()
             ok(f"Provisioned server: {config['target_host']}")
         else:
             err("Provisioning completed but no host IP was returned.")
             teardown_instance(config)
-            return
+            return False
 
     # ── Post-provisioning: hardening + service config ─────────────────────
     # Any failure here tears down the cloud instance (matches c2itall pattern)
@@ -989,14 +1046,16 @@ def deploy(server_type, config):
 
         ok(f"Deployment complete: {deployment_id}")
         save_deploy_info(config)
-        ssh_connect(config)
+        if config.get("ssh_after_deploy", True):
+            ssh_connect(config)
+        return True
 
     except Exception as e:
         err(str(e))
         if is_cloud:
             warn("Tearing down provisioned instance...")
             teardown_instance(config)
-        return
+        return False
 
 
 # ─── Main Menu ──────────────────────────────────────────────────────────────

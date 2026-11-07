@@ -312,6 +312,76 @@ def test_deploy_pipeline():
     return results
 
 
+def test_integrated_provider_dispatch():
+    header("Test 5b: Integrated Provider Dispatch")
+    import phantom
+    results = {"pass": 0, "fail": 0}
+    adapter = MagicMock()
+    adapter.gather_config.return_value = {
+        "azure_subscription_id": "00000000-0000-0000-0000-000000000000",
+        "azure_location": "eastus", "azure_vm_size": "Standard_D2as_v4",
+        "operator_ip": "8.8.8.8",
+    }
+
+    def available(workload, legacy_fallback=False):
+        if workload == "phantom" and legacy_fallback:
+            return ["aws", "linode", "flokinet", "azure"]
+        return []
+
+    with patch.object(phantom, "_integrated_provider_tools",
+                      return_value=(available, MagicMock())), \
+         patch("builtins.input", return_value="4"), \
+         patch("sys.stdout", new_callable=StringIO):
+        selected = phantom.select_provider()
+    if selected == "azure":
+        passed("Azure is offered after legacy providers in integrated mode")
+        results["pass"] += 1
+    else:
+        failed(f"Integrated provider selection returned {selected}")
+        results["fail"] += 1
+
+    config = {"deployment_id": "dispatchtest", "server_type": "vpn"}
+    with patch.object(phantom, "_provider_adapter", return_value=adapter):
+        gathered = phantom.gather_credentials("azure", config, service_type="vpn")
+    if gathered and config.get("provider_workload") == "phantom":
+        passed("Registered adapter gathers provider configuration")
+        results["pass"] += 1
+    else:
+        failed("Registered adapter configuration was not used")
+        results["fail"] += 1
+
+    adapter.deploy.side_effect = lambda value: value.update(
+        target_host="1.1.1.1", ssh_user="azureuser", ssh_key="/tmp/key") or True
+    config.update(provider="azure", ssh_after_deploy=False)
+    with patch.object(phantom, "_provider_adapter", return_value=adapter), \
+         patch.object(phantom, "run_playbook", return_value=True) as playbook, \
+         patch.object(phantom, "save_deploy_info") as saved, \
+         patch.object(phantom, "ssh_connect") as ssh, \
+         patch("builtins.input", return_value="y"), \
+         patch("sys.stdout", new_callable=StringIO):
+        deployed = phantom.deploy("vpn", config)
+    if deployed and playbook.call_count == 2 and saved.called and not ssh.called:
+        passed("Adapter provisioning enters the existing service pipeline")
+        results["pass"] += 1
+    else:
+        failed("Adapter deployment did not preserve the service pipeline")
+        results["fail"] += 1
+
+    adapter.cleanup.return_value = True
+    with patch.object(phantom, "_provider_adapter", return_value=adapter), \
+         patch.object(phantom, "_archive_deployment") as archive, \
+         patch("sys.stdout", new_callable=StringIO):
+        cleaned = phantom.teardown_instance(config)
+    if cleaned and adapter.cleanup.called and archive.called:
+        passed("Adapter cleanup is used before Phantom archival")
+        results["pass"] += 1
+    else:
+        failed("Adapter cleanup path was not used")
+        results["fail"] += 1
+
+    return results
+
+
 # ─── Test 6: SSH Key Generation ──────────────────────────────────────────────
 
 def test_ssh_keygen():
@@ -579,6 +649,7 @@ def main():
         test_playbook_syntax,
         test_gather_config,
         test_deploy_pipeline,
+        test_integrated_provider_dispatch,
         test_ssh_keygen,
         test_interactive_flow,
         test_deployment_discovery,
