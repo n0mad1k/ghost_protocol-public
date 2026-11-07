@@ -216,6 +216,17 @@ def test_playbook_syntax():
         failed("playbooks/matrix — admin creation is not safely idempotent")
         results["fail"] += 1
 
+    dns_install = (PLAYBOOKS_DIR / "dns/tasks/install.yml").read_text()
+    dns_configure = (PLAYBOOKS_DIR / "dns/tasks/configure.yml").read_text()
+    if ("DNSMASQ_LISTENING=all" in dns_install
+            and 'from_ip: "{{ operator_ip }}"' in dns_install
+            and "dns.listeningMode ALL" in dns_configure):
+        passed("playbooks/dns — remote queries are operator-scoped and enabled")
+        results["pass"] += 1
+    else:
+        failed("playbooks/dns — Azure-safe remote query configuration is incomplete")
+        results["fail"] += 1
+
     return results
 
 

@@ -49,6 +49,7 @@
       CACHE_SIZE=10000
       DNS_FQDN_REQUIRED=true
       DNS_BOGUS_PRIV=true
+      DNSMASQ_LISTENING=all
       DNSSEC=true
       BLOCKING_ENABLED=true
       WEBPASSWORD=
@@ -68,22 +69,14 @@
   environment:
     PIHOLE_SKIP_OS_CHECK: "true"
 
-- name: Allow DNS through UFW
+- name: Allow operator access to Pi-hole through UFW
   ufw:
     rule: allow
     port: "{{ item.port }}"
     proto: "{{ item.proto }}"
+    from_ip: "{{ operator_ip }}"
   loop:
     - { port: "53", proto: "tcp" }
     - { port: "53", proto: "udp" }
-
-- name: Allow Pi-hole admin from private networks only
-  ufw:
-    rule: allow
-    port: "80"
-    proto: tcp
-    from_ip: "{{ item }}"
-  loop:
-    - "10.0.0.0/8"
-    - "172.16.0.0/12"
-    - "192.168.0.0/16"
+    - { port: "80", proto: "tcp" }
+    - { port: "443", proto: "tcp" }

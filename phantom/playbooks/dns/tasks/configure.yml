@@ -54,6 +54,11 @@
   command: pihole -a dnssec on
   changed_when: true
 
+- name: Accept DNS queries from the Azure operator network
+  command: pihole-FTL --config dns.listeningMode ALL
+  changed_when: true
+  notify: restart pihole-FTL
+
 - name: Ensure pihole-FTL is running
   service:
     name: pihole-FTL
