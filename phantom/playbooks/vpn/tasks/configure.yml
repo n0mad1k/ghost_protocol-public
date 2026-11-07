@@ -23,6 +23,7 @@
     done
   args:
     creates: /etc/wireguard/clients/client1_private.key
+  no_log: true
 
 - name: Ensure ip6tables nat module is available
   modprobe:
@@ -77,15 +78,12 @@
     chmod 600 /etc/wireguard/wg0.conf
   args:
     creates: /etc/wireguard/wg0.conf
+  no_log: true
 
 - name: Verify WireGuard config
-  shell: cat /etc/wireguard/wg0.conf
-  register: wg_config_check
+  shell: wg-quick strip wg0 >/dev/null
   changed_when: false
-
-- name: Show generated config (debug)
-  debug:
-    var: wg_config_check.stdout_lines
+  no_log: true
 
 - name: Generate client config files
   shell: |
@@ -115,6 +113,7 @@
     done
   args:
     creates: /etc/wireguard/clients/client1.conf
+  no_log: true
 
 - name: Create WireGuard systemd override directory
   file:

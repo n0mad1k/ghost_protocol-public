@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import unittest
+import yaml
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -174,6 +175,27 @@ def test_playbook_syntax():
             err_line = result.stderr.strip().split("\n")[0] if result.stderr else result.stdout.strip().split("\n")[0]
             failed(f"{rel} — {err_line}")
             results["fail"] += 1
+
+    sensitive = {
+        "Generate server private key", "Save server private key",
+        "Read server private key", "Generate server public key",
+        "Generate client keys", "Build WireGuard server config",
+        "Verify WireGuard config", "Generate client config files",
+    }
+    vpn_tasks = []
+    for path in (PLAYBOOKS_DIR / "vpn/tasks/install.yml",
+                 PLAYBOOKS_DIR / "vpn/tasks/configure.yml"):
+        vpn_tasks.extend(yaml.safe_load(path.read_text()))
+    found = {task.get("name") for task in vpn_tasks if task.get("name") in sensitive}
+    protected = {task.get("name") for task in vpn_tasks
+                 if task.get("name") in sensitive and task.get("no_log") is True}
+    has_debug = any("debug" in task for task in vpn_tasks)
+    if found == sensitive and protected == sensitive and not has_debug:
+        passed("playbooks/vpn — key-bearing tasks suppress Ansible output")
+        results["pass"] += 1
+    else:
+        failed("playbooks/vpn — key-bearing task output is not fully suppressed")
+        results["fail"] += 1
 
     return results
 

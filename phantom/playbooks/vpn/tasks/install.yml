@@ -40,6 +40,7 @@
 - name: Generate server private key
   shell: wg genkey
   register: wg_server_privkey
+  no_log: true
   args:
     creates: /etc/wireguard/server_private.key
 
@@ -49,13 +50,16 @@
     dest: /etc/wireguard/server_private.key
     mode: "0600"
   when: wg_server_privkey.changed
+  no_log: true
 
 - name: Read server private key
   slurp:
     src: /etc/wireguard/server_private.key
   register: server_privkey_content
+  no_log: true
 
 - name: Generate server public key
   shell: "echo '{{ server_privkey_content.content | b64decode | trim }}' | wg pubkey"
   register: wg_server_pubkey
   changed_when: false
+  no_log: true
