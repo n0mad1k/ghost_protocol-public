@@ -220,11 +220,13 @@ def test_playbook_syntax():
     dns_configure = (PLAYBOOKS_DIR / "dns/tasks/configure.yml").read_text()
     if ("DNSMASQ_LISTENING=all" in dns_install
             and 'from_ip: "{{ operator_ip }}"' in dns_install
-            and "dns.listeningMode ALL" in dns_configure):
-        passed("playbooks/dns — remote queries are operator-scoped and enabled")
+            and "dns.listeningMode ALL" in dns_configure
+            and "Restrict saved Pi-hole admin password" in dns_configure
+            and 'mode: "0600"' in dns_configure):
+        passed("playbooks/dns — remote queries and saved credentials are restricted")
         results["pass"] += 1
     else:
-        failed("playbooks/dns — Azure-safe remote query configuration is incomplete")
+        failed("playbooks/dns — Azure-safe network or credential restrictions are incomplete")
         results["fail"] += 1
 
     return results

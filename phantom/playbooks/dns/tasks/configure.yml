@@ -65,6 +65,13 @@
     state: started
     enabled: true
 
+- name: Restrict saved Pi-hole admin password
+  file:
+    path: /etc/pihole/.phantom_password
+    owner: root
+    group: root
+    mode: "0600"
+
 - name: Display admin credentials
   debug:
     msg: "Pi-hole admin password saved to /etc/pihole/.phantom_password — access admin at http://{{ ansible_default_ipv4.address | default('server_ip') }}/admin"
