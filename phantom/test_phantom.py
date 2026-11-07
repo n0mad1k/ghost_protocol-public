@@ -232,6 +232,16 @@ def test_playbook_syntax():
         failed("playbooks/dns — Azure-safe network or credential restrictions are incomplete")
         results["fail"] += 1
 
+    cloud_install = yaml.safe_load(
+        (PLAYBOOKS_DIR / "cloud/tasks/install.yml").read_text())
+    cloud_dependencies = cloud_install[0].get("apt", {}).get("name", [])
+    if "bzip2" in cloud_dependencies:
+        passed("playbooks/cloud — Nextcloud tarball extractor is installed")
+        results["pass"] += 1
+    else:
+        failed("playbooks/cloud — bzip2 is required for the Nextcloud tarball")
+        results["fail"] += 1
+
     return results
 
 

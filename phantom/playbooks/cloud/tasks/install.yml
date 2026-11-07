@@ -23,6 +23,7 @@
       - certbot
       - python3-certbot-nginx
       - unzip
+      - bzip2
       - curl
       - ca-certificates
     state: present
