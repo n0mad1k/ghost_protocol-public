@@ -7,6 +7,7 @@
   become: true
   vars:
     _ssh_port: "{{ ssh_port | default('22') }}"
+    _ssh_service: "{{ 'ssh' if ansible_facts['os_family'] == 'Debian' else 'sshd' }}"
     ssh_allow_password: false
 
   tasks:
@@ -208,5 +209,5 @@
 
     - name: restart sshd
       service:
-        name: sshd
+        name: "{{ _ssh_service }}"
         state: restarted
