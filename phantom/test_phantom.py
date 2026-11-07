@@ -197,6 +197,24 @@ def test_playbook_syntax():
         failed("playbooks/vpn — key-bearing task output is not fully suppressed")
         results["fail"] += 1
 
+    synapse_tasks = yaml.safe_load(
+        (PLAYBOOKS_DIR / "matrix/tasks/synapse.yml").read_text())
+    admin_task = next(
+        (task for task in synapse_tasks if task.get("name") == "Create admin user"),
+        {},
+    )
+    failure_checks = " ".join(admin_task.get("failed_when", []))
+    if admin_task.get("no_log") is True \
+            and "User ID already taken" in failure_checks \
+            and "admin_create.stdout" in failure_checks \
+            and "admin_create.stderr" in failure_checks \
+            and admin_task.get("changed_when") == "admin_create.rc == 0":
+        passed("playbooks/matrix — existing admin is an idempotent, redacted success")
+        results["pass"] += 1
+    else:
+        failed("playbooks/matrix — admin creation is not safely idempotent")
+        results["fail"] += 1
+
     return results
 
 

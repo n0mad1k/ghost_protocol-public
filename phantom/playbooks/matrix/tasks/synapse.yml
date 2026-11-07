@@ -101,6 +101,6 @@
   register: admin_create
   failed_when:
     - admin_create.rc != 0
-    - "'User ID already taken' not in admin_create.stderr"
-  changed_when: "'User ID already taken' not in admin_create.stderr"
+    - "'User ID already taken' not in (admin_create.stdout ~ admin_create.stderr)"
+  changed_when: admin_create.rc == 0
   no_log: true
