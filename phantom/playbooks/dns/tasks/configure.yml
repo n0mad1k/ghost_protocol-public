@@ -65,6 +65,9 @@
     state: started
     enabled: true
 
+- name: Apply pending Pi-hole restarts before final permissions
+  meta: flush_handlers
+
 - name: Restrict saved Pi-hole admin password
   file:
     path: /etc/pihole/.phantom_password

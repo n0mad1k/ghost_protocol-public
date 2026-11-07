@@ -221,8 +221,11 @@ def test_playbook_syntax():
     if ("DNSMASQ_LISTENING=all" in dns_install
             and 'from_ip: "{{ operator_ip }}"' in dns_install
             and "dns.listeningMode ALL" in dns_configure
+            and "meta: flush_handlers" in dns_configure
             and "Restrict saved Pi-hole admin password" in dns_configure
-            and 'mode: "0600"' in dns_configure):
+            and 'mode: "0600"' in dns_configure
+            and dns_configure.index("meta: flush_handlers")
+                < dns_configure.index("Restrict saved Pi-hole admin password")):
         passed("playbooks/dns — remote queries and saved credentials are restricted")
         results["pass"] += 1
     else:
