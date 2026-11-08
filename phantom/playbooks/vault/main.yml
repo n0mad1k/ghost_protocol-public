@@ -1,5 +1,5 @@
 ---
-# Vaultwarden (Bitwarden-compatible) deployment — pre-built binary + systemd
+# Vaultwarden (Bitwarden-compatible) deployment: official container image + systemd
 
 - name: Deploy Vaultwarden Password Manager
   hosts: all

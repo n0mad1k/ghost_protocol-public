@@ -1,10 +1,5 @@
 ---
-# Vaultwarden binary installation from GitHub releases
-
-- name: Check for unsupported 32-bit ARM architecture
-  fail:
-    msg: "Vaultwarden does not support 32-bit ARM (armv7l). Use a 64-bit OS (aarch64) or x86_64 system."
-  when: ansible_architecture == "armv7l"
+# Vaultwarden installation from the official container image
 
 - name: Install prerequisites
   apt:
@@ -12,13 +7,18 @@
       - nginx
       - certbot
       - python3-certbot-nginx
-      - libssl-dev
-      - pkg-config
       - curl
       - ca-certificates
+      - docker.io
     state: present
     update_cache: true
   when: ansible_os_family == "Debian"
+
+- name: Enable and start Docker
+  service:
+    name: docker
+    state: started
+    enabled: true
 
 - name: Create vaultwarden system user
   user:
@@ -27,6 +27,7 @@
     shell: /usr/sbin/nologin
     home: /opt/vaultwarden
     create_home: false
+  register: vaultwarden_user
 
 - name: Create Vaultwarden directories
   file:
@@ -39,63 +40,13 @@
     - /opt/vaultwarden
     - /opt/vaultwarden/data
 
-- name: Detect system architecture
-  command: uname -m
-  register: system_arch
-  changed_when: false
-
-- name: Set architecture for download
-  set_fact:
-    vw_arch: "{{ 'aarch64' if system_arch.stdout == 'aarch64' else 'x86_64' }}"
-
-- name: Get latest Vaultwarden release tag
-  uri:
-    url: https://api.github.com/repos/dani-garcia/vaultwarden/releases/latest
-    return_content: true
-    headers:
-      Accept: application/vnd.github+json
-  register: vw_release
-
-- name: Set Vaultwarden version
-  set_fact:
-    vw_version: "{{ vw_release.json.tag_name }}"
-
-- name: Download Vaultwarden binary
-  get_url:
-    url: "https://github.com/dani-garcia/vaultwarden/releases/download/{{ vw_version }}/vaultwarden-{{ vw_version }}-linux-{{ vw_arch }}.tar.gz"
-    dest: "/tmp/vaultwarden-{{ vw_version }}.tar.gz"
-    mode: "0644"
-
-- name: Extract Vaultwarden binary
-  unarchive:
-    src: "/tmp/vaultwarden-{{ vw_version }}.tar.gz"
-    dest: /opt/vaultwarden/
-    remote_src: true
-    owner: vaultwarden
-    group: vaultwarden
-
-- name: Ensure binary is executable
-  file:
-    path: /opt/vaultwarden/vaultwarden
-    mode: "0755"
-    owner: vaultwarden
-    group: vaultwarden
-
-- name: Download Vaultwarden web vault
-  get_url:
-    url: "https://github.com/dani-garcia/bw_web_builds/releases/latest/download/bw_web_v2024.6.2c.tar.gz"
-    dest: /tmp/bw_web_vault.tar.gz
-    mode: "0644"
-  failed_when: false
-
-- name: Extract web vault
-  unarchive:
-    src: /tmp/bw_web_vault.tar.gz
-    dest: /opt/vaultwarden/
-    remote_src: true
-    owner: vaultwarden
-    group: vaultwarden
-  failed_when: false
+- name: Pull the official Vaultwarden image
+  command: docker pull ghcr.io/dani-garcia/vaultwarden:latest
+  register: vaultwarden_pull
+  changed_when: "'Downloaded newer image' in vaultwarden_pull.stdout"
+  retries: 3
+  delay: 10
+  until: vaultwarden_pull is success
 
 - name: Allow HTTP/HTTPS through UFW
   ufw:

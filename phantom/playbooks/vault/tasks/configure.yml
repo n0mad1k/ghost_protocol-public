@@ -8,20 +8,17 @@
       DOMAIN=https://{{ vaultwarden_domain }}
       SIGNUPS_ALLOWED={{ vaultwarden_signups | lower }}
       ADMIN_TOKEN={{ vaultwarden_admin_token }}
-      ROCKET_ADDRESS=127.0.0.1
+      ROCKET_ADDRESS=0.0.0.0
       ROCKET_PORT=8081
-      DATA_FOLDER=/opt/vaultwarden/data
-      WEB_VAULT_FOLDER=/opt/vaultwarden/web-vault
-      LOG_FILE=/opt/vaultwarden/data/vaultwarden.log
+      DATA_FOLDER=/data
+      LOG_FILE=/data/vaultwarden.log
       LOG_LEVEL=warn
       SENDS_ALLOWED=true
       EMERGENCY_ACCESS_ALLOWED=true
-      WEBSOCKET_ENABLED=true
-      WEBSOCKET_ADDRESS=127.0.0.1
-      WEBSOCKET_PORT=3012
     owner: vaultwarden
     group: vaultwarden
     mode: "0600"
+  no_log: true
   notify: restart vaultwarden
 
 - name: Deploy Vaultwarden systemd unit
@@ -31,29 +28,25 @@
       [Unit]
       Description=Vaultwarden (Bitwarden-compatible server)
       Documentation=https://github.com/dani-garcia/vaultwarden
-      After=network.target
+      After=docker.service network-online.target
+      Requires=docker.service
 
       [Service]
-      User=vaultwarden
-      Group=vaultwarden
-      EnvironmentFile=/opt/vaultwarden/.env
-      ExecStart=/opt/vaultwarden/vaultwarden
-      WorkingDirectory=/opt/vaultwarden
-
-      # Hardening
-      ProtectSystem=strict
-      ProtectHome=true
-      PrivateTmp=true
-      PrivateDevices=true
-      NoNewPrivileges=true
-      ReadWritePaths=/opt/vaultwarden/data
-
+      ExecStartPre=-/usr/bin/docker rm -f vaultwarden
+      ExecStart=/usr/bin/docker run --rm --name vaultwarden \
+        --user {{ vaultwarden_user.uid }}:{{ vaultwarden_user.group }} \
+        --env-file /opt/vaultwarden/.env \
+        --publish 127.0.0.1:8081:8081 \
+        --volume /opt/vaultwarden/data:/data \
+        ghcr.io/dani-garcia/vaultwarden:latest
+      ExecStop=/usr/bin/docker stop vaultwarden
       Restart=on-failure
       RestartSec=5
 
       [Install]
       WantedBy=multi-user.target
     mode: "0644"
+  notify: restart vaultwarden
 
 - name: Reload systemd daemon
   systemd:
@@ -70,4 +63,4 @@
     port: 8081
     host: 127.0.0.1
     delay: 3
-    timeout: 30
+    timeout: 90

@@ -1,4 +1,4 @@
-"""Vaultwarden (Bitwarden-compatible) deployment module — binary + systemd + nginx."""
+"""Vaultwarden (Bitwarden-compatible) deployment module: container image + systemd + nginx."""
 
 import secrets
 
@@ -11,7 +11,7 @@ RESET = "\033[0m"
 def gather_config(config):
     """Gather Vaultwarden configuration."""
     print(f"\n{CYAN}  ┌─ Vaultwarden Configuration ───────────────────────┐{RESET}")
-    print(f"  {CYAN}│{RESET}  {GREY}Pre-built binary + systemd + nginx{RESET}")
+    print(f"  {CYAN}│{RESET}  {GREY}Official container image + systemd + nginx{RESET}")
 
     config["domain"] = config.get("domain") or input(
         f"  {CYAN}│{RESET}  Domain or IP (e.g. vault.example.com or 192.168.1.100): "
