@@ -235,13 +235,28 @@ def test_playbook_syntax():
     cloud_install = yaml.safe_load(
         (PLAYBOOKS_DIR / "cloud/tasks/install.yml").read_text())
     cloud_dependencies = cloud_install[0].get("apt", {}).get("name", [])
-    cloud_configure = (PLAYBOOKS_DIR / "cloud/tasks/configure.yml").read_text()
+    cloud_configure_path = PLAYBOOKS_DIR / "cloud/tasks/configure.yml"
+    cloud_configure = cloud_configure_path.read_text()
+    cloud_configure_tasks = yaml.safe_load(cloud_configure)
+    cache_task = next(
+        (task for task in cloud_configure_tasks
+         if task.get("name") == "Configure Redis caching"),
+        {},
+    )
+    cache_arguments = cache_task.get("loop", [])
     if ({"bzip2", "python3-pymysql"}.issubset(cloud_dependencies)
-            and "apc.enable_cli=1" in cloud_configure):
-        passed("playbooks/cloud — archive, database and APCu CLI runtimes are configured")
+            and "apc.enable_cli=1" in cloud_configure
+            and cache_task.get("command", {}).get("argv")
+            and ["memcache.local", "--value=\\OC\\Memcache\\APCu"]
+                in cache_arguments
+            and ["memcache.distributed", "--value=\\OC\\Memcache\\Redis"]
+                in cache_arguments
+            and ["memcache.locking", "--value=\\OC\\Memcache\\Redis"]
+                in cache_arguments):
+        passed("playbooks/cloud — Nextcloud runtimes and literal cache classes are configured")
         results["pass"] += 1
     else:
-        failed("playbooks/cloud — a required Nextcloud runtime is missing")
+        failed("playbooks/cloud — a required runtime or literal cache class is missing")
         results["fail"] += 1
 
     return results
