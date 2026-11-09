@@ -290,7 +290,9 @@ def run_playbook(playbook_path, config, extra_vars=None):
         inv_file = WORK_DIR / deployment_id / "inventory"
         ssh_key = config.get("ssh_key", "")
         ssh_user = config.get("ssh_user", "root")
-        known_hosts = str(_ssh_known_hosts_path(deployment_id))
+        known_hosts = str(
+            config.get("ssh_known_hosts_path") or
+            _ssh_known_hosts_path(deployment_id))
 
         ssh_args = (
             f"-o StrictHostKeyChecking=accept-new "
