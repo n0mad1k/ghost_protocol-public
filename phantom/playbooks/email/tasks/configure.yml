@@ -46,6 +46,7 @@
         group: root
         mode: "0600"
       no_log: true
+      when: not miab_completion.stat.exists
 
     - name: Run Mail-in-a-Box installer (non-interactive)
       shell: |
