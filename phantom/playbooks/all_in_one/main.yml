@@ -143,6 +143,9 @@
       when: "'media' in selected_services"
 
   handlers:
+    - name: Include WireGuard handlers
+      import_tasks: "{{ playbook_dir }}/../vpn/handlers/main.yml"
+
     - name: reload nginx
       service:
         name: nginx

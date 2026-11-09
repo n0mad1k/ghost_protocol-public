@@ -20,6 +20,5 @@
       include_tasks: tasks/configure.yml
 
   handlers:
-    - name: reload ufw
-      ufw:
-        state: reloaded
+    - name: Include WireGuard handlers
+      import_tasks: handlers/main.yml
