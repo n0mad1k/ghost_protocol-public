@@ -31,10 +31,17 @@
   args:
     creates: /etc/mailinabox.conf
   environment:
+    DEBIAN_FRONTEND: "noninteractive"
     NONINTERACTIVE: "1"
     PRIMARY_HOSTNAME: "{{ miab_domain }}"
     EMAIL_ADDR: "{{ miab_first_user }}"
     EMAIL_PW: "{{ (miab_password_file.content | b64decode).strip() }}"
+    PUBLIC_IP: "auto"
+    PUBLIC_IPV6: "auto"
+    STORAGE_USER: "user-data"
+    STORAGE_ROOT: "/home/user-data"
+    SKIP_NETWORK_CHECKS: >-
+      {{ '1' if (email_skip_network_checks | default(false) | bool) else '' }}
   timeout: 3600
 
 - name: Display admin credentials
