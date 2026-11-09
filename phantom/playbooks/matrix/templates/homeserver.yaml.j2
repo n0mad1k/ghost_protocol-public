@@ -27,6 +27,7 @@ signing_key_path: "/etc/matrix-synapse/homeserver.signing.key"
 
 registration_shared_secret: "{{ matrix_signing_key }}"
 enable_registration: {{ matrix_registration_enabled | lower }}
+registration_requires_token: {{ matrix_registration_token_required | lower }}
 {% if not matrix_registration_enabled %}
 enable_registration_without_verification: false
 {% endif %}

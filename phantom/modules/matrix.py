@@ -43,6 +43,7 @@ def gather_config(config):
         f"  {CYAN}│{RESET}  Open registration? [{WHITE}no{RESET}]: "
     ).strip().lower()
     config["matrix_registration"] = config["matrix_registration"] in ("yes", "y", "true")
+    config["matrix_registration_requires_token"] = False
 
     config["matrix_element_web"] = input(
         f"  {CYAN}│{RESET}  Deploy Element Web? [{WHITE}yes{RESET}]: "

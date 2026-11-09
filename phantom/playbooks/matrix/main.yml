@@ -11,6 +11,7 @@
     matrix_admin: "{{ matrix_admin_user | default('admin') }}"
     matrix_admin_pass: "{{ matrix_admin_password }}"
     matrix_registration_enabled: "{{ matrix_registration | default(false) }}"
+    matrix_registration_token_required: "{{ matrix_registration_requires_token | default(false) }}"
     element_enabled: "{{ matrix_element_web | default(true) }}"
     matrix_signing_key: "{{ matrix_signing_key }}"
     target_host: "{{ target_host | default('localhost') }}"
