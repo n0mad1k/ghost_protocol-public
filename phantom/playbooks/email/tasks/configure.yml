@@ -35,7 +35,7 @@
     PRIMARY_HOSTNAME: "{{ miab_domain }}"
     EMAIL_ADDR: "{{ miab_first_user }}"
     EMAIL_PW: "{{ (miab_password_file.content | b64decode).strip() }}"
-  timeout: 600
+  timeout: 3600
 
 - name: Display admin credentials
   debug:
