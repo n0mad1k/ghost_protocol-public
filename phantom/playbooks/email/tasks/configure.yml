@@ -26,24 +26,47 @@
     version: main
     depth: 1
 
-- name: Run Mail-in-a-Box installer (non-interactive)
-  command: bash setup/start.sh
-  args:
-    chdir: /opt/mailinabox
-    creates: /etc/mailinabox.conf
-  environment:
-    DEBIAN_FRONTEND: "noninteractive"
-    NONINTERACTIVE: "1"
-    PRIMARY_HOSTNAME: "{{ miab_domain }}"
-    EMAIL_ADDR: "{{ miab_first_user }}"
-    EMAIL_PW: "{{ (miab_password_file.content | b64decode).strip() }}"
-    PUBLIC_IP: "{{ ansible_host }}"
-    PUBLIC_IPV6: "auto"
-    STORAGE_USER: "user-data"
-    STORAGE_ROOT: "/home/user-data"
-    SKIP_NETWORK_CHECKS: >-
-      {{ '1' if (email_skip_network_checks | default(false) | bool) else '' }}
-  timeout: 3600
+- name: Install Mail-in-a-Box without exposing installer credentials
+  block:
+    - name: Write root-only Mail-in-a-Box installer environment
+      copy:
+        content: |
+          DEBIAN_FRONTEND=noninteractive
+          NONINTERACTIVE=1
+          PRIMARY_HOSTNAME={{ miab_domain | quote }}
+          EMAIL_ADDR={{ miab_first_user | quote }}
+          EMAIL_PW={{ (miab_password_file.content | b64decode).strip() | quote }}
+          PUBLIC_IP={{ ansible_host | quote }}
+          PUBLIC_IPV6=auto
+          STORAGE_USER=user-data
+          STORAGE_ROOT=/home/user-data
+          SKIP_NETWORK_CHECKS={{ '1' if (email_skip_network_checks | default(false) | bool) else "''" }}
+        dest: /root/.miab-install.env
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Run Mail-in-a-Box installer (non-interactive)
+      shell: |
+        set -a
+        . /root/.miab-install.env
+        set +a
+        exec bash setup/start.sh
+      args:
+        chdir: /opt/mailinabox
+        creates: /etc/mailinabox.conf
+        executable: /bin/bash
+      register: miab_install
+      retries: 3
+      delay: 30
+      until: miab_install is succeeded
+      timeout: 1800
+  always:
+    - name: Remove Mail-in-a-Box installer environment
+      file:
+        path: /root/.miab-install.env
+        state: absent
 
 - name: Display admin credentials
   debug:
