@@ -27,8 +27,9 @@
     depth: 1
 
 - name: Run Mail-in-a-Box installer (non-interactive)
-  command: bash /opt/mailinabox/setup/start.sh
+  command: bash setup/start.sh
   args:
+    chdir: /opt/mailinabox
     creates: /etc/mailinabox.conf
   environment:
     DEBIAN_FRONTEND: "noninteractive"
@@ -36,7 +37,7 @@
     PRIMARY_HOSTNAME: "{{ miab_domain }}"
     EMAIL_ADDR: "{{ miab_first_user }}"
     EMAIL_PW: "{{ (miab_password_file.content | b64decode).strip() }}"
-    PUBLIC_IP: "auto"
+    PUBLIC_IP: "{{ ansible_host }}"
     PUBLIC_IPV6: "auto"
     STORAGE_USER: "user-data"
     STORAGE_ROOT: "/home/user-data"
