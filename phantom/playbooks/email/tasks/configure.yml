@@ -49,13 +49,16 @@
 
     - name: Run Mail-in-a-Box installer (non-interactive)
       shell: |
+        set -e
         set -a
         . /root/.miab-install.env
         set +a
-        exec bash setup/start.sh
+        bash setup/start.sh
+        install -d -m 0755 /var/lib/c2itall
+        touch /var/lib/c2itall/mailinabox-installed
       args:
         chdir: /opt/mailinabox
-        creates: /etc/mailinabox.conf
+        creates: /var/lib/c2itall/mailinabox-installed
         executable: /bin/bash
       register: miab_install
       retries: 3
