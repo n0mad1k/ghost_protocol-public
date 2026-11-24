@@ -1,5 +1,5 @@
 #!/bin/bash
-# Conky OPSEC Status — OPSEC Status Widget
+# Conky OPSEC Status
 # Called by conky via execpi — outputs Conky color markup
 # Network data is read from cache (updated by conky-opsec-cache.sh in background)
 #
@@ -11,6 +11,10 @@
 
 ADVANCED=false
 [ -f /var/run/opsec-advanced.enabled ] && ADVANCED=true
+FAILED_CLOSED=false
+[ -f /run/opsec/activation-failed ] && FAILED_CLOSED=true
+ACTIVATION_UNSAFE=false
+[ -f /run/opsec/activation-unsafe ] && ACTIVATION_UNSAFE=true
 
 # ─── READ CACHE (instant — no network calls) ──────────────────────────────
 # Safe parsing: extract values via grep/cut instead of sourcing as shell code
@@ -40,7 +44,13 @@ fi
 
 # ─── HEADER ──────────────────────────────────────────────────────────────────
 echo "\${color4}\${hr 1}"
-if $ADVANCED; then
+if $ACTIVATION_UNSAFE; then
+    echo "\${color5}\${font JetBrains Mono:bold:size=11}\${alignc}OPSEC STATUS\${font}"
+    echo "\${color0}\${font JetBrains Mono:bold:size=8}\${alignc}CONTAINMENT UNVERIFIED\${font}"
+elif $FAILED_CLOSED; then
+    echo "\${color5}\${font JetBrains Mono:bold:size=11}\${alignc}OPSEC STATUS\${font}"
+    echo "\${color0}\${font JetBrains Mono:bold:size=8}\${alignc}FAILED-CLOSED\${font}"
+elif $ADVANCED; then
     echo "\${color5}\${font JetBrains Mono:bold:size=11}\${alignc}OPSEC STATUS\${font}"
     echo "\${color1}\${font JetBrains Mono:bold:size=8}\${alignc}▲ ADVANCED ▲\${font}"
 else
@@ -107,8 +117,8 @@ if $ADVANCED; then
         echo "\${color6} DNSLK     \${color0}UNLOCKED"
     fi
 
-    ISO=$(grep "IsolateDestAddr" /etc/tor/torrc 2>/dev/null | head -1)
-    [ -n "$ISO" ] && echo "\${color6} ISOL      \${color1}ACTIVE  \${color9}(stream isolation)"
+    ISO=$(grep "IsolateSOCKSAuth" /etc/tor/torrc 2>/dev/null | awk '{print $2}')
+    [ "$ISO" = "1" ] && echo "\${color6} ISOL      \${color1}ACTIVE  \${color9}(stream isolation)"
 
     PAD=$(grep "ConnectionPadding" /etc/tor/torrc 2>/dev/null | awk '{print $2}')
     [ "$PAD" = "1" ] && echo "\${color6} TPAD      \${color1}ACTIVE  \${color9}(traffic padding)"
@@ -203,7 +213,7 @@ if $ADVANCED; then
         echo "\${color6} DNS       \${color2}SECURE  \${color9}(tor, NM unlocked)"
     elif [ "$_dns_server" = "127.0.0.1" ]; then
         echo "\${color6} DNS       \${color2}PARTIAL \${color9}(tor, not locked)"
-    elif echo "$_dns_server" | grep -qE '^(9\.9\.9\.9|149\.112\.112\.112|1\.1\.1\.1|1\.0\.0\.1)$'; then
+    elif echo "$_dns_server" | grep -qE '^(9\.9\.9\.9|149\.112|1\.1\.1\.1|1\.0\.0\.1)$'; then
         echo "\${color6} DNS       \${color2}PRIVACY \${color9}(${_dns_server})"
     else
         echo "\${color6} DNS       \${color0}LEAKED  \${color9}(${_dns_server})"

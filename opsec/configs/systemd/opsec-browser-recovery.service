@@ -1,0 +1,14 @@
+[Unit]
+Description=Recover interrupted OPSEC browser policy before networking
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target NetworkManager.service networking.service systemd-networkd.service display-manager.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/opsec-browser-recovery.sh
+TimeoutStartSec=90
+
+[Install]
+WantedBy=sysinit.target

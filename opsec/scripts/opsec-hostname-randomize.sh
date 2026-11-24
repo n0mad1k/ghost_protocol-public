@@ -21,7 +21,7 @@ fi
 
 # Config values with defaults
 PATTERN="${HOSTNAME_PATTERN:-desktop}"
-PREFIX="${HOSTNAME_CUSTOM_PREFIX:-}"
+PREFIX="${HOSTNAME_CUSTOM_PREFIX:-workstation}"
 
 RAND_HEX=$(head -c 2 /dev/urandom | od -An -tx1 | tr -d ' ')
 OLD_HOSTNAME=$(hostname)

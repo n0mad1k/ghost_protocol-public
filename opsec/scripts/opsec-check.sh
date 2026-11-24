@@ -64,9 +64,7 @@ echo "    [*] $(timedatectl | grep "Time zone" | awk '{print $3}')"
 # Check for running security tools
 echo ""
 echo "[*] Running Security Tools:"
-# Tool inventory is configurable via OPSEC_TOOL_CHECK in opsec.conf
-OPSEC_TOOL_CHECK="${OPSEC_TOOL_CHECK:-curl wget openssl gpg tor}"
-for tool in $OPSEC_TOOL_CHECK; do
+for tool in nmap masscan gobuster ffuf feroxbuster nikto sqlmap burpsuite wireshark metasploit; do
     if pgrep -f $tool > /dev/null; then
         echo "    [!] $tool is running"
     fi

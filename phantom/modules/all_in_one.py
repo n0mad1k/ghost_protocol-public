@@ -79,7 +79,7 @@ def gather_config(config):
 
     # Base domain or IP for nginx vhosts
     config["domain"] = input(
-        f"\n  {CYAN}Base domain or IP (e.g. example.com or 192.168.1.100):{RESET} "
+        f"\n  {CYAN}Base domain or IP (e.g. example.com or 192.0.2.10):{RESET} "
     ).strip()
     if not config["domain"]:
         print(f"  {RED}Domain or IP is required for reverse proxy.{RESET}")

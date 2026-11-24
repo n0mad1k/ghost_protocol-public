@@ -26,15 +26,91 @@ EXTRA_PORTS="${KILLSWITCH_EXTRA_PORTS:-}"
 TRANS_PORT="${TOR_TRANS_PORT:-9040}"
 DNS_PORT="${TOR_DNS_PORT:-5353}"
 
-CHAIN="GP_FW"
-TOR_UID=$(id -u debian-tor 2>/dev/null || id -u tor 2>/dev/null || echo "")
+CHAIN="OPSEC_KILLSWITCH"
+TOR_SERVICE=$(opsec_find_tor_service 2>/dev/null || echo tor.service)
+TOR_USER=$(systemctl show -p User --value "$TOR_SERVICE" 2>/dev/null || true)
+[ -n "$TOR_USER" ] || TOR_USER=$(awk '$1 == "User" {print $2; exit}' /etc/tor/torrc 2>/dev/null)
+[ -n "$TOR_USER" ] || { getent passwd tor >/dev/null 2>&1 && TOR_USER=tor; }
+[ -n "$TOR_USER" ] || { getent passwd debian-tor >/dev/null 2>&1 && TOR_USER=debian-tor; }
+TOR_UID=$(id -u "$TOR_USER" 2>/dev/null || echo "")
 KS_LOG="/run/opsec/debug.log"
+KS_POLICY_STATE="/run/opsec/strict-policy.state"
 mkdir -p /run/opsec 2>/dev/null || true
 KS_ERR=$(mktemp /run/opsec/.ks-err.XXXXXX 2>/dev/null || mktemp /tmp/.ks-err.XXXXXX)
 KS_FAIL=0
 trap 'rm -f "$KS_ERR"' EXIT
 
 ks_log() { echo "[$(date -Is)] [killswitch] $*" >> "$KS_LOG"; }
+
+ks_policy_fingerprint() {
+    local policy_json
+    policy_json=$(nft -j list table inet opsec_strict 2>/dev/null) || return 1
+    [ -n "$policy_json" ] || return 1
+    jq -e '.nftables | type == "array" and length > 0' <<<"$policy_json" >/dev/null || return 1
+    jq -S 'walk(if type == "object" then del(.handle, .packets, .bytes) else . end)' <<<"$policy_json" |
+        sha256sum | awk '{print $1}'
+}
+
+ks_record_policy() {
+    local mode="$1" fingerprint tmp
+    fingerprint=$(ks_policy_fingerprint) || return 1
+    [ "${#fingerprint}" -eq 64 ] || return 1
+    tmp=$(mktemp /run/opsec/.strict-policy.XXXXXX) || return 1
+    printf '%s %s\n' "$mode" "$fingerprint" > "$tmp"
+    chmod 0600 "$tmp"
+    chown root:root "$tmp"
+    mv -f "$tmp" "$KS_POLICY_STATE"
+}
+
+ks_policy_matches() {
+    local expected_mode="$1" mode expected current owner mode_bits
+    [ -f "$KS_POLICY_STATE" ] && [ ! -L "$KS_POLICY_STATE" ] || return 1
+    owner=$(stat -c '%u:%g' "$KS_POLICY_STATE" 2>/dev/null) || return 1
+    mode_bits=$(stat -c '%a' "$KS_POLICY_STATE" 2>/dev/null) || return 1
+    [ "$owner" = "0:0" ] && [ "$mode_bits" = "600" ] || return 1
+    read -r mode expected < "$KS_POLICY_STATE" || return 1
+    [ "$mode" = "$expected_mode" ] && [ "${#expected}" -eq 64 ] || return 1
+    current=$(ks_policy_fingerprint) || return 1
+    [ "$current" = "$expected" ]
+}
+
+ks_strict_status() {
+    command -v nft >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && [ -n "$TOR_UID" ] || return 1
+    nft -j list table inet opsec_strict 2>/dev/null | jq -e --argjson tor_uid "$TOR_UID" '
+        def chains: [.nftables[] | .chain? | select(.family == "inet" and .table == "opsec_strict")];
+        def rules($name): [.nftables[] | .rule? | select(.family == "inet" and .table == "opsec_strict" and .chain == $name)];
+        def accepts: any(.expr[]; has("accept"));
+        def meta($key; $right): any(.expr[]; .match?.left?.meta?.key == $key and .match.right == $right);
+        (chains | length == 3) and
+        (chains | any(.name == "output_nat" and .type == "nat" and .hook == "output" and .prio == -100 and .policy == "accept")) and
+        (chains | any(.name == "input" and .type == "filter" and .hook == "input" and .prio == 0 and .policy == "drop")) and
+        (chains | any(.name == "output" and .type == "filter" and .hook == "output" and .prio == 0 and .policy == "drop")) and
+        (rules("output_nat") | length == 6) and
+        (rules("input") | length == 3) and
+        (rules("output") | length == 18) and
+        (rules("input") | any((meta("iif"; "lo") or meta("iifname"; "lo")) and accepts)) and
+        (rules("input") | any(any(.expr[]; .match?.left?.ct?.key == "state") and accepts)) and
+        (rules("output") | any((meta("oif"; "lo") or meta("oifname"; "lo")) and accepts)) and
+        (rules("output") | any(meta("skuid"; $tor_uid) and meta("l4proto"; "tcp") and accepts)) and
+        (rules("output") | any(meta("l4proto"; "udp") and any(.expr[]; has("reject")))) and
+        (rules("output") | all(any(.expr[]; .match?.left?.ct?.key == "state") | not))
+    ' >/dev/null && ks_policy_matches strict
+}
+
+ks_emergency_status() {
+    command -v nft >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 1
+    nft -j list table inet opsec_strict 2>/dev/null | jq -e '
+        def chains: [.nftables[] | .chain? | select(.family == "inet" and .table == "opsec_strict")];
+        def rules($name): [.nftables[] | .rule? | select(.family == "inet" and .table == "opsec_strict" and .chain == $name)];
+        (chains | length == 2) and
+        (chains | all(.type == "filter" and .prio == 0 and .policy == "drop")) and
+        (chains | any(.name == "input" and .hook == "input")) and
+        (chains | any(.name == "output" and .hook == "output")) and
+        (rules("input") | length == 1) and (rules("output") | length == 1) and
+        (rules("input") | all(any(.expr[]; (.match?.left?.meta?.key == "iif" or .match?.left?.meta?.key == "iifname") and .match.right == "lo") and any(.expr[]; has("accept")))) and
+        (rules("output") | all(any(.expr[]; (.match?.left?.meta?.key == "oif" or .match?.left?.meta?.key == "oifname") and .match.right == "lo") and any(.expr[]; has("accept"))))
+    ' >/dev/null && ks_policy_matches emergency
+}
 
 # Wrapper that logs failures and tracks failure count
 ipt() {
@@ -117,7 +193,7 @@ ks_nat_on() {
     opsec_info "Arming NAT transparent proxy..."
     ks_log "=== NAT PROXY ON ==="
 
-    local NAT_CHAIN="GP_NAT"
+    local NAT_CHAIN="OPSEC_KS_NAT"
 
     # Remove jump before flush to prevent brief bypass window
     iptables -t nat -D OUTPUT -j "$NAT_CHAIN" 2>/dev/null
@@ -196,7 +272,7 @@ ks_off() {
     iptables -X "$CHAIN" 2>/dev/null
 
     # NAT chain (config-independent teardown)
-    local NAT_CHAIN="GP_NAT"
+    local NAT_CHAIN="OPSEC_KS_NAT"
     iptables -t nat -D OUTPUT -j "$NAT_CHAIN" 2>/dev/null
     iptables -t nat -F "$NAT_CHAIN" 2>/dev/null
     iptables -t nat -X "$NAT_CHAIN" 2>/dev/null
@@ -228,6 +304,18 @@ ks_off() {
 }
 
 ks_status() {
+    if ks_strict_status; then
+        opsec_green "Strict no-leak policy is ARMED"
+        nft list table inet opsec_strict
+        return 0
+    elif ks_emergency_status; then
+        opsec_info "Emergency containment policy is ARMED"
+        nft list table inet opsec_strict
+        return 0
+    elif nft list table inet opsec_strict >/dev/null 2>&1; then
+        echo "Strict firewall table exists but could not be verified" >&2
+        return 1
+    fi
     if iptables -L "$CHAIN" >/dev/null 2>&1; then
         opsec_green "Kill switch is ARMED"
         echo ""
@@ -235,8 +323,8 @@ ks_status() {
         iptables -L "$CHAIN" -v -n --line-numbers
         echo ""
         echo "NAT chain:"
-        if iptables -t nat -L GP_NAT >/dev/null 2>&1; then
-            iptables -t nat -L GP_NAT -v -n --line-numbers
+        if iptables -t nat -L OPSEC_KS_NAT >/dev/null 2>&1; then
+            iptables -t nat -L OPSEC_KS_NAT -v -n --line-numbers
         else
             echo "  (not armed)"
         fi
@@ -248,14 +336,113 @@ ks_status() {
     fi
 }
 
+ks_strict_on() {
+    command -v nft >/dev/null 2>&1 || { echo "nftables is required for strict mode" >&2; return 1; }
+    [ -n "$TOR_UID" ] || { echo "Tor service account was not found" >&2; return 1; }
+    local rules
+    rules=$(mktemp /run/opsec/.strict-nft.XXXXXX) || return 1
+    cat > "$rules" <<EOF
+table inet opsec_strict {
+  chain output_nat {
+    type nat hook output priority -100; policy accept;
+    meta skuid $TOR_UID return
+    udp dport 53 counter redirect to :$DNS_PORT
+    tcp dport 53 counter redirect to :$DNS_PORT
+    ip daddr 127.0.0.0/8 return
+    ip6 daddr ::1 return
+    meta l4proto tcp counter redirect to :$TRANS_PORT
+  }
+  chain input {
+    type filter hook input priority 0; policy drop;
+    iif lo accept
+    ct state established,related accept
+    udp sport 67 udp dport 68 accept
+  }
+  chain output {
+    type filter hook output priority 0; policy drop;
+    oif lo accept
+    ip daddr 127.0.0.1 tcp dport $TRANS_PORT accept
+    ip daddr 127.0.0.1 udp dport $DNS_PORT accept
+    ip daddr 127.0.0.1 tcp dport $DNS_PORT accept
+    udp sport 68 udp dport 67 ip daddr 255.255.255.255 accept
+    udp sport 68 udp dport 67 ip daddr 0.0.0.0/0 accept
+    ip daddr 10.0.0.0/8 reject
+    ip daddr 100.64.0.0/10 reject
+    ip daddr 169.254.0.0/16 reject
+    ip daddr 172.16.0.0/12 reject
+    ip daddr 192.168.0.0/16 reject
+    ip daddr 224.0.0.0/4 reject
+    ip daddr 255.255.255.255 reject
+    ip6 daddr fc00::/7 reject
+    ip6 daddr fe80::/10 reject
+    ip6 daddr ff00::/8 reject
+    meta skuid $TOR_UID meta l4proto tcp accept
+    meta l4proto udp counter reject
+  }
+}
+EOF
+    if nft list table inet opsec_strict >/dev/null 2>&1; then
+        sed -i '1i delete table inet opsec_strict' "$rules"
+    fi
+    if ! nft -c -f "$rules" || ! nft -f "$rules"; then
+        rm -f "$rules"
+        return 1
+    fi
+    rm -f "$rules"
+    ks_record_policy strict || return 1
+    ks_strict_status || return 1
+    ks_log "Strict nftables policy armed; only Tor UID and DHCP egress allowed"
+    opsec_green "Strict no-leak policy ARMED"
+}
+
+ks_strict_off() {
+    if nft list table inet opsec_strict >/dev/null 2>&1; then
+        nft delete table inet opsec_strict || return 1
+    fi
+    rm -f "$KS_POLICY_STATE"
+}
+
+ks_emergency_on() {
+    command -v nft >/dev/null 2>&1 || return 1
+    local rules
+    rules=$(mktemp /run/opsec/.emergency-nft.XXXXXX) || return 1
+    cat > "$rules" <<'EOF'
+table inet opsec_strict {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    iif lo accept
+  }
+  chain output {
+    type filter hook output priority 0; policy drop;
+    oif lo accept
+  }
+}
+EOF
+    if nft list table inet opsec_strict >/dev/null 2>&1; then
+        sed -i '1i delete table inet opsec_strict' "$rules"
+    fi
+    if ! nft -c -f "$rules" || ! nft -f "$rules"; then
+        rm -f "$rules"
+        return 1
+    fi
+    rm -f "$rules"
+    ks_record_policy emergency || return 1
+    ks_emergency_status
+}
+
 case "${1}" in
     on)         ks_on ;;
     filter-on)  ks_filter_on ;;
     nat-on)     ks_nat_on ;;
+    strict-on)  ks_strict_on ;;
+    strict-status) ks_strict_status ;;
+    emergency-on) ks_emergency_on ;;
+    emergency-status) ks_emergency_status ;;
+    strict-off) ks_strict_off ;;
     off)        ks_off ;;
     status)     ks_status ;;
     *)
-        echo "Usage: $(basename "$0") on|off|filter-on|nat-on|status"
+        echo "Usage: $(basename "$0") on|off|filter-on|nat-on|strict-on|strict-status|strict-off|emergency-on|emergency-status|status"
         exit 1
         ;;
 esac

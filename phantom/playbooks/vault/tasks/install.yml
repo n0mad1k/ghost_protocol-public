@@ -1,6 +1,11 @@
 ---
 # Vaultwarden installation from the official container image
 
+- name: Check for unsupported 32-bit ARM architecture
+  fail:
+    msg: "Vaultwarden does not support 32-bit ARM (armv7l). Use a 64-bit OS (aarch64) or x86_64 system."
+  when: ansible_architecture == "armv7l"
+
 - name: Install prerequisites
   apt:
     name:

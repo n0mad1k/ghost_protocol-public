@@ -1,0 +1,40 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Loaded explicitly only while OPSEC mode is active. These fixed attachments
+# never incorporate user-controlled desktop-entry or process text.
+profile opsec-dirty-brave /opt/brave-bin/brave {
+  allow all,
+  audit deny network inet,
+  audit deny network inet6,
+}
+
+profile opsec-dirty-brave-debian /opt/brave.com/brave/brave {
+  allow all,
+  audit deny network inet,
+  audit deny network inet6,
+}
+
+profile opsec-dirty-chromium /usr/lib/chromium/chromium {
+  allow all,
+  audit deny network inet,
+  audit deny network inet6,
+}
+
+profile opsec-dirty-firefox /usr/lib/firefox/firefox flags=(kill) {
+  allow all,
+  audit deny network inet,
+  audit deny network inet6,
+}
+
+profile opsec-dirty-tor-browser /home/*/.local/opt/tor-browser/app/Browser/firefox {
+  allow all,
+  audit deny network inet,
+  audit deny network inet6,
+}
+
+profile opsec-dirty-tor-browser-real /home/*/.local/opt/tor-browser/app/Browser/firefox.real {
+  allow all,
+  audit deny network inet,
+  audit deny network inet6,
+}

@@ -88,8 +88,14 @@ esac
 trap '[ -n "${TAIL_PID:-}" ] && kill "$TAIL_PID" 2>/dev/null; [ "$_OWNS_LOCK" = "true" ] && rm -f "$PID_FILE"' EXIT
 
 STATE_FILE="/var/run/opsec-advanced.enabled"
+ACTIVATING_FILE="/run/opsec/activation-in-progress"
+FAILED_FILE="/run/opsec/activation-failed"
+UNSAFE_FILE="/run/opsec/activation-unsafe"
+BROWSER_UID_FILE="/run/opsec/browser.uid"
+IDENTITY_SERVICE_STATE="/run/opsec/identity-services.active"
 BOOT_MARKER="/etc/opsec/boot-advanced.enabled"
 TORRC_DEFAULT="/etc/tor/torrc-default"
+TOR_LOG="${TOR_LOG_FILE:-/var/log/tor/notices.log}"
 RESOLV_BACKUP="/etc/resolv.conf.backup"
 OPSEC_LIB="/usr/local/lib/opsec/opsec-lib.sh"
 BREAKGLASS_STATE="/var/run/opsec-breakglass.active"
@@ -97,6 +103,10 @@ BREAKGLASS_TIMEOUT="${BREAKGLASS_TIMEOUT:-900}"  # 15 minutes default
 PREFLIGHT_LOG="/run/opsec/preflight.log"
 DEBUG_LOG="/run/opsec/debug.log"
 BOOTSTRAP_STOP="/var/run/opsec-bootstrap-stop"
+ACTIVATION_WATCHDOG_UNIT="opsec-activation-rollback"
+ACTIVATION_WATCHDOG_STATE="/run/opsec/activation-watchdog.state"
+ACTIVATION_WATCHDOG_SCRIPT="/run/opsec/activation-watchdog.sh"
+ACTIVATION_ROLLBACK_SECONDS="${OPSEC_ACTIVATION_ROLLBACK_SECONDS:-300}"
 NM_MAC_CONF="/etc/NetworkManager/conf.d/opsec-mac-random.conf"
 
 # Debug logger — appends timestamped entries (prints to terminal in verbose mode)
@@ -127,6 +137,101 @@ else
     opsec_hdr()    { echo -e "\033[38;5;51m━━━ \033[38;5;201m$*\033[38;5;51m ━━━\033[0m"; }
 fi
 
+arm_activation_watchdog() {
+    local activation_id start_time tmp
+    command -v systemd-run >/dev/null 2>&1 || return 1
+    [[ "$ACTIVATION_ROLLBACK_SECONDS" =~ ^[0-9]+$ ]] && [ "$ACTIVATION_ROLLBACK_SECONDS" -ge 60 ] || return 1
+    activation_id=$(cat /proc/sys/kernel/random/uuid) || return 1
+    start_time=$(awk '{print $22}' "/proc/$$/stat") || return 1
+    tmp=$(mktemp /run/opsec/.activation-watchdog.XXXXXX) || return 1
+    printf '%s %s %s\n' "$activation_id" "$$" "$start_time" > "$tmp"
+    chmod 0600 "$tmp"
+    mv -f "$tmp" "$ACTIVATION_WATCHDOG_STATE"
+    cat > "$ACTIVATION_WATCHDOG_SCRIPT" <<'WATCHDOG'
+#!/bin/bash
+set -u
+state=/run/opsec/activation-watchdog.state
+[ -f "$state" ] && [ ! -L "$state" ] && [ "$(stat -c '%u:%g:%a' "$state" 2>/dev/null)" = "0:0:600" ] || exit 1
+read -r activation_id activation_pid activation_start < "$state" || exit 1
+[[ "$activation_id" =~ ^[0-9a-f-]{36}$ && "$activation_pid" =~ ^[0-9]+$ && "$activation_start" =~ ^[0-9]+$ ]] || exit 1
+if [ -f /var/run/opsec-advanced.enabled ] && [ ! -f /run/opsec/activation-in-progress ]; then
+    rm -f "$state" /run/opsec/activation-watchdog.sh
+    exit 0
+fi
+if [ -r "/proc/$activation_pid/stat" ] && [ "$(awk '{print $22}' "/proc/$activation_pid/stat" 2>/dev/null)" = "$activation_start" ]; then
+    kill -TERM "$activation_pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+        kill -0 "$activation_pid" 2>/dev/null || break
+        sleep 0.25
+    done
+    kill -KILL "$activation_pid" 2>/dev/null || true
+fi
+touch /var/run/opsec-bootstrap-stop
+OPSEC_TIMEOUT_ROLLBACK=1 /usr/local/bin/opsec-mode off || {
+    /usr/local/bin/opsec-killswitch.sh strict-off >/dev/null 2>&1 || true
+    exit 1
+}
+rm -f "$state" /run/opsec/activation-watchdog.sh
+WATCHDOG
+    chmod 0700 "$ACTIVATION_WATCHDOG_SCRIPT"
+    systemctl stop "${ACTIVATION_WATCHDOG_UNIT}.timer" "${ACTIVATION_WATCHDOG_UNIT}.service" >/dev/null 2>&1 || true
+    systemctl reset-failed "${ACTIVATION_WATCHDOG_UNIT}.service" >/dev/null 2>&1 || true
+    systemd-run --quiet --unit="$ACTIVATION_WATCHDOG_UNIT" \
+        --on-active="${ACTIVATION_ROLLBACK_SECONDS}s" --timer-property=AccuracySec=1s \
+        /bin/bash "$ACTIVATION_WATCHDOG_SCRIPT" || return 1
+    systemctl is-active --quiet "${ACTIVATION_WATCHDOG_UNIT}.timer" || return 1
+    opsec_green "Automatic activation rollback armed (${ACTIVATION_ROLLBACK_SECONDS}s)"
+}
+
+cancel_activation_watchdog() {
+    [ "${OPSEC_TIMEOUT_ROLLBACK:-0}" = "1" ] && return 0
+    systemctl stop "${ACTIVATION_WATCHDOG_UNIT}.timer" "${ACTIVATION_WATCHDOG_UNIT}.service" >/dev/null 2>&1 || true
+    systemctl reset-failed "${ACTIVATION_WATCHDOG_UNIT}.service" >/dev/null 2>&1 || true
+    rm -f "$ACTIVATION_WATCHDOG_STATE" "$ACTIVATION_WATCHDOG_SCRIPT"
+}
+
+TOR_SERVICE=$(opsec_find_tor_service 2>/dev/null || echo tor.service)
+
+tor_bootstrap_line() {
+    journalctl -u "$TOR_SERVICE" -b --no-pager -o cat 2>/dev/null | grep 'Bootstrapped' | tail -1 || true
+}
+
+tor_tcp_loopback_listener() {
+    ss -H -ltn 2>/dev/null | awk -v port="$1" '$4 == "127.0.0.1:" port {found=1} END {exit !found}'
+}
+
+tor_udp_loopback_listener() {
+    ss -H -lun 2>/dev/null | awk -v port="$1" '$4 == "127.0.0.1:" port {found=1} END {exit !found}'
+}
+
+verify_tor_service_identity() {
+    local expected_user expected_uid pid pid_again process_uid process_exe cgroup attempt
+    expected_user=$(systemctl show -p User --value "$TOR_SERVICE" 2>/dev/null || true)
+    [ -n "$expected_user" ] || expected_user=$(awk '$1 == "User" {print $2; exit}' /etc/tor/torrc 2>/dev/null)
+    expected_uid=$(id -u "$expected_user" 2>/dev/null || true)
+    [[ "$expected_uid" =~ ^[0-9]+$ ]] || return 1
+    for attempt in $(seq 1 30); do
+        if systemctl is-active --quiet "$TOR_SERVICE"; then
+            pid=$(systemctl show -p MainPID --value "$TOR_SERVICE" 2>/dev/null || true)
+            if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [ -r "/proc/$pid/stat" ]; then
+                process_uid=$(stat -c %u "/proc/$pid" 2>/dev/null || true)
+                process_exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
+                cgroup=$(cat "/proc/$pid/cgroup" 2>/dev/null || true)
+                sleep 0.25
+                pid_again=$(systemctl show -p MainPID --value "$TOR_SERVICE" 2>/dev/null || true)
+                if [ "$pid" = "$pid_again" ] && [ "$process_uid" = "$expected_uid" ] && \
+                   [ "$process_exe" = /usr/bin/tor ] && grep -Fq "/${TOR_SERVICE}" <<<"$cgroup"; then
+                    opsec_debug "Verified Tor identity: service=$TOR_SERVICE pid=$pid uid=$process_uid exe=$process_exe"
+                    return 0
+                fi
+            fi
+        fi
+        sleep 0.25
+    done
+    opsec_debug "Tor identity verification exhausted restart window: service=$(systemctl is-active "$TOR_SERVICE" 2>&1) pid=$(systemctl show -p MainPID --value "$TOR_SERVICE" 2>&1)"
+    return 1
+}
+
 # ─── HELPERS ───────────────────────────────────────────────────────────────────
 
 get_level_type() {
@@ -143,6 +248,129 @@ is_cloud_level() {
         cloud-*) return 0 ;;
         *)       return 1 ;;
     esac
+}
+
+stop_identity_apps() {
+    opsec_info "Stopping identity-bearing applications..."
+    if [ ! -f "$IDENTITY_SERVICE_STATE" ]; then
+        : > "$IDENTITY_SERVICE_STATE"
+        chmod 0600 "$IDENTITY_SERVICE_STATE"
+        for service in tailscaled.service avahi-daemon.service; do
+            systemctl is-active "$service" >/dev/null 2>&1 && echo "$service" >> "$IDENTITY_SERVICE_STATE"
+        done
+    fi
+    for service in tailscaled.service avahi-daemon.service; do
+        systemctl stop "$service" 2>/dev/null || true
+    done
+    resolve_desktop_user || return 1
+    user_systemctl stop opsec-browser.service >/dev/null 2>&1 || true
+    runuser -u "$DESKTOP_USER" -- flatpak kill org.chromium.Chromium >/dev/null 2>&1 || true
+    for process_name in spotify Discord discord kdeconnectd; do
+        pkill -TERM -u "$DESKTOP_UID" -x "$process_name" 2>/dev/null || true
+    done
+    while IFS= read -r proc; do
+        local pid exe
+        pid="${proc#/proc/}"; pid="${pid%/exe}"
+        [ "$(stat -c %u "/proc/$pid" 2>/dev/null)" = "$DESKTOP_UID" ] || continue
+        exe=$(readlink -f "$proc" 2>/dev/null || true)
+        case "$exe" in
+            /opt/brave-bin/brave|/opt/brave.com/brave/brave|/usr/lib/firefox/firefox|/usr/lib/chromium/chromium|\
+            /home/*/.local/opt/tor-browser/app/Browser/firefox|/home/*/.local/opt/tor-browser/app/Browser/firefox.real|\
+            /home/*/.local/share/torbrowser/tbb/x86_64/tor-browser/Browser/firefox|\
+            /home/*/.local/share/torbrowser/tbb/x86_64/tor-browser/Browser/firefox.real)
+                kill -TERM "$pid" 2>/dev/null || true ;;
+        esac
+    done < <(find /proc -maxdepth 2 -path '/proc/[0-9]*/exe' -print 2>/dev/null)
+    sleep 2
+    for process_name in spotify Discord discord kdeconnectd; do
+        pkill -KILL -u "$DESKTOP_UID" -x "$process_name" 2>/dev/null || true
+    done
+    while IFS= read -r proc; do
+        local pid exe
+        pid="${proc#/proc/}"; pid="${pid%/exe}"
+        [ "$(stat -c %u "/proc/$pid" 2>/dev/null)" = "$DESKTOP_UID" ] || continue
+        exe=$(readlink -f "$proc" 2>/dev/null || true)
+        case "$exe" in
+            /opt/brave-bin/brave|/opt/brave.com/brave/brave|/usr/lib/firefox/firefox|/usr/lib/chromium/chromium|\
+            /home/*/.local/opt/tor-browser/app/Browser/firefox|/home/*/.local/opt/tor-browser/app/Browser/firefox.real|\
+            /home/*/.local/share/torbrowser/tbb/x86_64/tor-browser/Browser/firefox|\
+            /home/*/.local/share/torbrowser/tbb/x86_64/tor-browser/Browser/firefox.real)
+                kill -KILL "$pid" 2>/dev/null || true ;;
+        esac
+    done < <(find /proc -maxdepth 2 -path '/proc/[0-9]*/exe' -print 2>/dev/null)
+    if pgrep -u "$DESKTOP_UID" -x brave >/dev/null 2>&1 || \
+       pgrep -u "$DESKTOP_UID" -x firefox >/dev/null 2>&1 || \
+       pgrep -u "$DESKTOP_UID" -x chrome >/dev/null 2>&1 || \
+       pgrep -u "$DESKTOP_UID" -x chromium >/dev/null 2>&1; then
+        opsec_red "A browser process could not be safely identified and stopped"
+        return 1
+    fi
+    for service in tailscaled.service avahi-daemon.service; do
+        if systemctl is-active "$service" >/dev/null 2>&1; then
+            opsec_red "$service could not be stopped"
+            return 1
+        fi
+    done
+    for process_name in spotify Discord discord kdeconnectd; do
+        if pgrep -u "$DESKTOP_UID" -x "$process_name" >/dev/null 2>&1; then
+            opsec_red "$process_name could not be stopped"
+            return 1
+        fi
+    done
+    opsec_green "Identity-bearing applications stopped"
+}
+
+resolve_desktop_user() {
+    local candidate="${OPSEC_DESKTOP_USER:-}"
+    if [ -z "$candidate" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+        candidate="$SUDO_USER"
+    fi
+    if [ -z "$candidate" ] && [[ "${PKEXEC_UID:-}" =~ ^[0-9]+$ ]]; then
+        candidate=$(getent passwd "$PKEXEC_UID" | cut -d: -f1)
+    fi
+    if [ -z "$candidate" ]; then
+        candidate=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$4=="seat0" {print $3; exit}')
+    fi
+    [ -n "$candidate" ] || { opsec_red "No desktop user could be resolved"; return 1; }
+    DESKTOP_UID=$(id -u "$candidate" 2>/dev/null) || return 1
+    [ "$DESKTOP_UID" -ge 1000 ] || { opsec_red "Refusing desktop UID $DESKTOP_UID"; return 1; }
+    DESKTOP_USER="$candidate"
+    DESKTOP_HOME=$(getent passwd "$DESKTOP_UID" | cut -d: -f6)
+    [ -d "$DESKTOP_HOME" ] && [ "$(stat -c %u "$DESKTOP_HOME")" = "$DESKTOP_UID" ] || return 1
+    printf '%s\n' "$DESKTOP_UID" > "$BROWSER_UID_FILE"
+    chmod 0600 "$BROWSER_UID_FILE"
+}
+
+user_systemctl() {
+    systemctl --user --machine="${DESKTOP_USER}@.host" "$@"
+}
+
+mark_failed_closed() {
+    local reason="$1" tmp contained=false
+    rm -f "$STATE_FILE" "$ACTIVATING_FILE"
+    rm -f "$FAILED_FILE" "$UNSAFE_FILE"
+    if /usr/local/bin/opsec-killswitch.sh strict-on >/dev/null 2>&1 &&
+       /usr/local/bin/opsec-killswitch.sh strict-status >/dev/null 2>&1; then
+        contained=true
+    elif /usr/local/bin/opsec-killswitch.sh emergency-on >/dev/null 2>&1 &&
+         /usr/local/bin/opsec-killswitch.sh emergency-status >/dev/null 2>&1; then
+        contained=true
+    fi
+    if "$contained"; then
+        tmp=$(mktemp /run/opsec/.activation-failed.XXXXXX)
+        printf '%s\n' "$reason" > "$tmp"
+        chmod 0600 "$tmp"
+        mv -f "$tmp" "$FAILED_FILE"
+        opsec_red "GHOST MODE FAILED-CLOSED: $reason"
+        opsec_red "Network containment verified. Recover with: sudo opsec-mode off"
+    else
+        tmp=$(mktemp /run/opsec/.activation-unsafe.XXXXXX)
+        printf '%s\n' "$reason" > "$tmp"
+        chmod 0600 "$tmp"
+        mv -f "$tmp" "$UNSAFE_FILE"
+        opsec_red "GHOST MODE ACTIVATION FAILED: $reason"
+        opsec_red "CRITICAL: network containment could not be verified; traffic may be exposed"
+    fi
 }
 
 # ─── BASE MODE (standard privacy hardening only) ─────────────────────────────
@@ -261,8 +489,8 @@ EOF
 
 # ─── ON ──────────────────────────────────────────────────────────────────────
 mode_on() {
-    local rotation="${TOR_CIRCUIT_ROTATION:-30}"
-    local blacklist="${TOR_BLACKLIST-us,gb,ca,au,nz}"
+    local rotation="${TOR_CIRCUIT_ROTATION:-}"
+    local blacklist="${TOR_BLACKLIST:-}"
     local socks_port="${TOR_SOCKS_PORT:-9050}"
     local dns_port="${TOR_DNS_PORT:-5353}"
     local profile="${PROFILE_NAME:-default}"
@@ -278,15 +506,31 @@ mode_on() {
 
     # Clear any stale stop signal from previous runs
     rm -f "$BOOTSTRAP_STOP"
-
-    # 0. Disarm stale KS, then immediately arm filter-only lockdown
-    if iptables -L GP_FW >/dev/null 2>&1; then
-        opsec_debug "Step 0: Disarming stale kill switch"
-        /usr/local/bin/opsec-killswitch.sh off 2>/dev/null
+    rm -f "$FAILED_FILE" "$UNSAFE_FILE"
+    touch "$ACTIVATING_FILE"
+    chmod 0600 "$ACTIVATING_FILE"
+    if ! arm_activation_watchdog; then
+        rm -f "$ACTIVATING_FILE" "$ACTIVATION_WATCHDOG_STATE" "$ACTIVATION_WATCHDOG_SCRIPT"
+        opsec_red "Activation refused: automatic rollback could not be armed"
+        return 1
     fi
-    opsec_debug "Step 0.5: Arming filter-only lockdown (pre-bootstrap)"
-    /usr/local/bin/opsec-killswitch.sh filter-on
-    opsec_debug "  Filter lockdown active — only Tor/VPN/DHCP allowed"
+
+    # 0. Strict mode is fail-closed: stop identity-bearing apps, then permit only Tor UID + DHCP.
+    if ! stop_identity_apps; then
+        mark_failed_closed "identity-bearing applications could not be stopped"
+        return 1
+    fi
+    if ! /usr/local/bin/opsec-killswitch.sh strict-on; then
+        mark_failed_closed "strict no-leak firewall could not be verified"
+        return 1
+    fi
+    opsec_debug "Strict nftables policy active — only Tor UID and DHCP egress allowed"
+    if ! /usr/local/bin/opsec-browser-policy.sh recover "$DESKTOP_UID" || \
+       ! /usr/local/bin/opsec-browser-policy.sh apply "$DESKTOP_UID"; then
+        mark_failed_closed "dirty-browser network policy could not be verified"
+        return 1
+    fi
+    opsec_green "Persistent-profile browsers blocked; disposable OPSEC Browser enabled"
 
     # 1. Disable IPv6
     opsec_info "Step 1/10: Disabling IPv6..."
@@ -371,9 +615,9 @@ NMEOF
         opsec_dim "Skipped (cloud deployment)"
     fi
 
-    # 4. Set state marker EARLY — needed for chattr +i in DNS step
-    touch "$STATE_FILE"
-    opsec_debug "Step 4: State marker set early (for DNS lock)"
+    # 4. Activation-in-progress was marked before the first mutation so the
+    # independent timeout service can always perform a complete rollback.
+    opsec_debug "Step 4: Activation-in-progress marker already set"
 
     # 5. Deploy hardened torrc + clear stale Tor state + restart Tor
     opsec_info "Step 5/10: Deploying hardened Tor configuration..."
@@ -381,7 +625,7 @@ NMEOF
 
     # Clear Tor caches only if TOR_CLEAR_CACHE=1 (preserving guard state)
     opsec_debug "  Cache clear: TOR_CLEAR_CACHE=${TOR_CLEAR_CACHE:-0}"
-    systemctl stop tor 2>/dev/null || true
+    systemctl stop "$TOR_SERVICE" 2>/dev/null || true
     if [ "${TOR_CLEAR_CACHE:-0}" = "1" ]; then
         opsec_debug "  Clearing Tor descriptor caches"
         rm -f /var/lib/tor/cached-descriptors /var/lib/tor/cached-descriptors.new \
@@ -406,15 +650,18 @@ NMEOF
     cat /etc/tor/torrc >> "$DEBUG_LOG" 2>&1
     opsec_debug "---"
 
-    # Truncate Tor log so bootstrap check doesn't read stale entries
-    mkdir -p /run/tor && chown debian-tor:debian-tor /run/tor 2>/dev/null || true
-    : > /run/tor/notices.log
-    chown debian-tor:debian-tor /run/tor/notices.log 2>/dev/null || true
-
     opsec_debug "Restarting Tor service..."
-    systemctl restart tor 2>&1 | tee -a "$DEBUG_LOG"
-    opsec_debug "systemctl restart tor exit code: $?"
-    opsec_debug "Tor service status: $(systemctl is-active tor 2>&1)"
+    if ! systemctl restart "$TOR_SERVICE" >> "$DEBUG_LOG" 2>&1; then
+        opsec_debug "systemctl restart $TOR_SERVICE failed"
+        mark_failed_closed "Tor service could not be restarted"
+        return 1
+    fi
+    opsec_debug "systemctl restart $TOR_SERVICE succeeded"
+    if ! verify_tor_service_identity; then
+        mark_failed_closed "Tor service process identity could not be verified"
+        return 1
+    fi
+    opsec_debug "Tor service status: $(systemctl is-active "$TOR_SERVICE" 2>&1)"
 
     # 6. Configure DNS (lock it before bootstrap wait)
     opsec_info "Step 6/10: Configuring DNS..."
@@ -434,12 +681,14 @@ NMEOF
         chattr +i /etc/resolv.conf
         opsec_green "DNS locked to 127.0.0.1 (Tor DNSPort ${dns_port})"
     fi
-    # Force lock DNS regardless — state file is already set
+    # Force lock DNS regardless while activation is in progress.
     chattr +i /etc/resolv.conf 2>/dev/null || true
     # Verify immutable flag actually took hold
     if ! lsattr /etc/resolv.conf 2>/dev/null | grep -q 'i'; then
-        opsec_red "WARNING: chattr +i failed on resolv.conf — DNS lock may not hold"
+        opsec_red "chattr +i failed on resolv.conf — refusing activation"
         opsec_debug "  CRITICAL: chattr +i verification FAILED — filesystem may not support extended attributes"
+        mark_failed_closed "effective DNS resolver could not be locked"
+        return 1
     else
         opsec_debug "  chattr +i verified on resolv.conf"
     fi
@@ -457,10 +706,6 @@ DNSEOF
     opsec_yellow "Waiting for Tor to fully bootstrap (100%)..."
     opsec_debug "Step 7: Tor bootstrap wait (180s max)"
     TAIL_PID=""
-    if [ "$VERBOSE" = "true" ]; then
-        tail -f /run/tor/notices.log 2>/dev/null &
-        TAIL_PID=$!
-    fi
     local tor_ready=false
     for i in $(seq 1 180); do
         # Check if mode_off signaled us to stop
@@ -471,8 +716,8 @@ DNSEOF
             break
         fi
         local boot_pct
-        boot_pct=$(grep "Bootstrapped" /run/tor/notices.log 2>/dev/null | tail -1 | grep -oP '\d+(?=%)' || true)
-        if [ "$boot_pct" = "100" ] && ss -tln | grep -q ":${socks_port} "; then
+        boot_pct=$(tor_bootstrap_line | grep -oP '\d+(?=%)' || true)
+        if [ "$boot_pct" = "100" ] && tor_tcp_loopback_listener "$socks_port"; then
             opsec_green "Tor fully bootstrapped (100%) at ${i}s"
             opsec_debug "Tor bootstrapped 100% at second ${i}"
             tor_ready=true
@@ -487,39 +732,38 @@ DNSEOF
             opsec_red "Tor bootstrap timeout after 180s (at ${boot_pct:-0}%)"
             opsec_debug "TIMEOUT: Tor at ${boot_pct:-0}% after 180s"
             opsec_debug "Last 10 Tor log lines:"
-            tail -10 /run/tor/notices.log >> "$DEBUG_LOG" 2>&1
+            journalctl -u "$TOR_SERVICE" -b --no-pager -n 10 >> "$DEBUG_LOG" 2>&1
         fi
     done
     [ -n "${TAIL_PID:-}" ] && kill "$TAIL_PID" 2>/dev/null
+
+    if [ "$tor_ready" != "true" ]; then
+        mark_failed_closed "Tor did not fully bootstrap within 180 seconds"
+        return 1
+    fi
 
     # 8. Add NAT transparent proxy AFTER Tor is ready
     opsec_info "Step 8/10: Arming NAT transparent proxy..."
     opsec_debug "Step 8: NAT proxy (tor_ready=${tor_ready})"
     local ks_exit
     if [ "$tor_ready" = "true" ]; then
-        /usr/local/bin/opsec-killswitch.sh nat-on
+        : # strict nftables policy already provides transparent TCP/DNS redirection
         ks_exit=$?
         opsec_debug "  NAT proxy armed with Tor at 100% (exit=${ks_exit})"
     else
         # If mode_off aborted us, don't arm NAT — teardown is already running
-        if [ ! -f "$STATE_FILE" ]; then
+        if [ ! -f "$STATE_FILE" ] && [ ! -f "$ACTIVATING_FILE" ]; then
             opsec_yellow "Bootstrap aborted by mode_off — skipping NAT arm"
             opsec_debug "  Skipping NAT — state file gone (mode_off in progress)"
             return 0
         fi
-        opsec_yellow "WARNING: Tor not fully bootstrapped — arming NAT anyway"
-        /usr/local/bin/opsec-killswitch.sh nat-on
-        ks_exit=$?
-        opsec_debug "  NAT proxy armed with Tor NOT ready (exit=${ks_exit})"
+        mark_failed_closed "Tor was not ready for transparent proxying"
+        return 1
     fi
     opsec_debug "  Kill switch exit code: ${ks_exit}"
     # Flush conntrack so stale entries don't bypass NAT redirect
     conntrack -F 2>/dev/null && opsec_debug "  conntrack table flushed" || opsec_debug "  conntrack flush skipped (not available)"
-    opsec_debug "  Filter rule count: $(iptables -L GP_FW --line-numbers 2>/dev/null | tail -n +3 | wc -l)"
-    local _nat_count
-    _nat_count=$(iptables -t nat -L GP_NAT --line-numbers 2>/dev/null | tail -n +3 | wc -l)
-    opsec_debug "  NAT chain (GP_NAT) rule count: ${_nat_count}"
-    opsec_debug "  NAT OUTPUT jump rules: $(iptables -t nat -L OUTPUT --line-numbers 2>/dev/null | tail -n +3 | wc -l)"
+    opsec_debug "  Strict nftables policy: $(/usr/local/bin/opsec-killswitch.sh strict-status >/dev/null 2>&1 && echo VERIFIED || echo UNVERIFIED)"
     # TCP listeners (TransPort 9040, SOCKSPort 9050)
     local _tcp_ports
     _tcp_ports=$(ss -tlnp 2>/dev/null | grep -E ":(9040|9050|5353)" || echo "  NONE")
@@ -549,94 +793,99 @@ DNSEOF
         opsec_green "Boot-into-advanced: enabled"
     fi
 
-    # 10. Start sentry daemon if available
+    # 10. Start IOC-U sentry if available
     opsec_info "Step 10/10: Starting sentry..."
-    opsec_debug "Step 10: Sentry + traffic blend"
+    opsec_debug "Step 10: Sentry and optional traffic blend"
     if [ -x /usr/local/bin/opsec-sentry.sh ]; then
-        /usr/local/bin/opsec-sentry.sh start 2>/dev/null && opsec_green "Sentry daemon started" || opsec_yellow "Sentry start failed"
+        /usr/local/bin/opsec-sentry.sh start 2>/dev/null && opsec_green "IOC-U sentry started" || opsec_yellow "Sentry start failed"
     else
         opsec_dim "Sentry not installed — skipping"
     fi
-    if [ -x /usr/local/bin/opsec-traffic-blend.sh ]; then
+    if [ "${TRAFFIC_BLEND_ENABLED:-0}" = "1" ] && [ -x /usr/local/bin/opsec-traffic-blend.sh ]; then
         /usr/local/bin/opsec-traffic-blend.sh start 2>/dev/null && opsec_green "Traffic blending started" || opsec_dim "Traffic blend not started"
     fi
 
     # ─── EXIT GATE: Verify all subsystems before declaring active ────────────
     _final_ok=true
-    if ! systemctl is-active tor >/dev/null 2>&1; then
+    if ! systemctl is-active "$TOR_SERVICE" >/dev/null 2>&1; then
         opsec_red "CRITICAL: Tor is NOT running"; _final_ok=false
     fi
-    if ! iptables -C OUTPUT -j GP_FW 2>/dev/null; then
-        opsec_red "CRITICAL: Kill switch is NOT armed"; _final_ok=false
+    if ! /usr/local/bin/opsec-killswitch.sh strict-status >/dev/null 2>&1; then
+        opsec_red "CRITICAL: Kill switch could not be verified"; _final_ok=false
     fi
-    # Check NAT rules exist (either in chain or direct OUTPUT fallback)
-    local _gate_nat_count=0
-    if iptables -t nat -L GP_NAT >/dev/null 2>&1; then
-        _gate_nat_count=$(iptables -t nat -L GP_NAT --line-numbers 2>/dev/null | tail -n +3 | wc -l)
-    fi
-    if [ "$_gate_nat_count" -lt 3 ]; then
-        # Check if fallback direct OUTPUT rules are present
-        local _gate_output_nat
-        _gate_output_nat=$(iptables -t nat -L OUTPUT --line-numbers 2>/dev/null | tail -n +3 | wc -l)
-        if [ "$_gate_output_nat" -lt 3 ]; then
-            opsec_red "CRITICAL: NAT transparent proxy NOT armed (chain=${_gate_nat_count}, output=${_gate_output_nat} rules)"
-            _final_ok=false
-        else
-            opsec_debug "  NAT using direct OUTPUT fallback (${_gate_output_nat} rules)"
-        fi
-    fi
-    if ! ss -tln | grep -q ":${socks_port} "; then
+    if ! tor_tcp_loopback_listener "$socks_port"; then
         opsec_red "CRITICAL: SOCKS port ${socks_port} NOT listening"; _final_ok=false
     fi
     # Check TransPort (9040) and DNSPort (5353) are listening
-    if ! ss -tln | grep -q ":9040 "; then
+    if ! tor_tcp_loopback_listener 9040; then
         opsec_red "CRITICAL: TransPort 9040 NOT listening"; _final_ok=false
     fi
-    if ! ss -uln | grep -q ":5353 "; then
+    if ! tor_udp_loopback_listener 5353; then
         opsec_red "CRITICAL: DNSPort 5353 NOT listening (UDP)"; _final_ok=false
     fi
     # Live connectivity test — actually verify traffic flows through Tor
     if [ "$_final_ok" = "true" ]; then
         opsec_info "Testing transparent proxy connectivity..."
-        local _tp_result
-        _tp_result=$(curl -4 -s --max-time 15 https://check.torproject.org/api/ip 2>&1)
+        local _tp_result _socks_result
+        _tp_result=$(env -u http_proxy -u https_proxy -u all_proxy -u no_proxy \
+            -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u NO_PROXY \
+            curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 45 \
+            --noproxy '*' https://check.torproject.org/api/ip 2>&1) || _final_ok=false
         opsec_debug "  TransProxy test result: ${_tp_result}"
-        if echo "$_tp_result" | grep -q '"IsTor":true'; then
+        if [ "$_final_ok" = "true" ] && jq -e '.IsTor == true' <<<"$_tp_result" >/dev/null 2>&1; then
             opsec_green "Transparent proxy VERIFIED — traffic routed through Tor"
-        elif echo "$_tp_result" | grep -q '"IsTor":false'; then
-            opsec_red "CRITICAL: Transparent proxy LEAKING — traffic NOT through Tor"
-            _final_ok=false
         else
-            opsec_yellow "WARNING: Transparent proxy test inconclusive (timeout or network error)"
+            opsec_red "CRITICAL: Transparent proxy verification failed or timed out"
             opsec_debug "  curl output: ${_tp_result}"
-            # Don't fail — services are running, might just be slow
+            _final_ok=false
+        fi
+        _socks_result=$(env -u http_proxy -u https_proxy -u all_proxy -u no_proxy \
+            -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u NO_PROXY \
+            curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 45 \
+            --socks5-hostname "127.0.0.1:${socks_port}" https://check.torproject.org/api/ip 2>&1) || _final_ok=false
+        if [ "$_final_ok" = "true" ] && jq -e '.IsTor == true' <<<"$_socks_result" >/dev/null 2>&1; then
+            opsec_green "SOCKS proxy VERIFIED — system Tor is usable by OPSEC Browser"
+        else
+            opsec_red "CRITICAL: System Tor SOCKS verification failed or timed out"
+            opsec_debug "  SOCKS curl output: ${_socks_result}"
+            _final_ok=false
         fi
     fi
     if [ "$_final_ok" = "false" ]; then
-        opsec_red "=========================================="
-        opsec_red "  GHOST MODE ACTIVATION FAILED"
-        opsec_red "  YOU ARE NOT PROTECTED"
-        opsec_red "=========================================="
-        opsec_red "  Tearing down partial activation..."
-        # Clean teardown — don't leave zombie armed state
-        /usr/local/bin/opsec-killswitch.sh off 2>/dev/null
-        rm -f /etc/NetworkManager/conf.d/opsec-dns-lock.conf
-        nmcli general reload 2>/dev/null || true
-        chattr -i /etc/resolv.conf 2>/dev/null || true
-        rm -f "$STATE_FILE"
-        opsec_red "  Recovery: sudo opsec-mode off   (full cleanup)"
-        opsec_red "=========================================="
-        exit 1
+        mark_failed_closed "live Tor routing verification failed"
+        return 1
     fi
+
+    # Full preflight is a hard activation gate.
+    if [ -x /usr/local/bin/opsec-preflight.sh ]; then
+        opsec_info "Running post-activation preflight..."
+        if ! /usr/local/bin/opsec-preflight.sh --full --enforce; then
+            echo "[$(date -Is)] PREFLIGHT FAIL after mode_on" >> "$PREFLIGHT_LOG"
+            mark_failed_closed "post-activation preflight failed"
+            return 1
+        fi
+    else
+        mark_failed_closed "opsec-preflight.sh is missing"
+        return 1
+    fi
+
+    # Publish ACTIVE atomically only after every gate passes.
+    local _state_tmp
+    _state_tmp=$(mktemp /run/opsec/.advanced-enabled.XXXXXX)
+    printf '%s\n' "$DESKTOP_UID" > "$_state_tmp"
+    chmod 0600 "$_state_tmp"
+    mv -f "$_state_tmp" "$STATE_FILE"
+    rm -f "$ACTIVATING_FILE" "$FAILED_FILE" "$UNSAFE_FILE"
+    cancel_activation_watchdog
 
     echo ""
     opsec_hdr "GHOST MODE: ACTIVE"
     echo ""
     opsec_dim "Profile:          ${profile}"
-    opsec_dim "Kill switch:      armed (Tor/VPN only)"
+    opsec_dim "Kill switch:      armed (Tor only; DHCP exception)"
     opsec_dim "DNS:              ${DNS_MODE:-tor}"
-    opsec_dim "Exit blacklist:   ${blacklist}"
-    opsec_dim "Circuit rotation: ${rotation}s"
+    opsec_dim "Exit policy:      ${blacklist:-Tor upstream default}"
+    opsec_dim "Circuit lifetime: ${rotation:+${rotation}s}${rotation:-Tor upstream default}"
     if ! is_cloud_level; then
         opsec_dim "MAC addresses:    randomized"
         opsec_dim "Hostname:         randomized"
@@ -646,16 +895,6 @@ DNSEOF
     opsec_dim "Off:  sudo opsec-mode off"
     echo ""
 
-    # Run full preflight verification
-    if [ -x /usr/local/bin/opsec-preflight.sh ]; then
-        opsec_info "Running post-activation preflight..."
-        /usr/local/bin/opsec-preflight.sh --full --enforce || {
-            opsec_red "Preflight FAILED — kill switch stays armed (safe default)"
-            opsec_red "Check failures: opsec-preflight"
-            echo "[$(date -Is)] PREFLIGHT FAIL after mode_on" >> "$PREFLIGHT_LOG"
-        }
-    fi
-
     # ─── FINAL STATE SUMMARY ─────────────────────────────────────────────────
     opsec_debug "=========================================="
     opsec_debug "=== MODE ON FINAL STATE ==="
@@ -663,14 +902,13 @@ DNSEOF
     opsec_debug "Hostname: $(hostname)"
     opsec_debug "DNS: $(cat /etc/resolv.conf 2>/dev/null | tr '\n' ' ')"
     opsec_debug "IPv6 disabled: $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)"
-    opsec_debug "Tor status: $(systemctl is-active tor 2>&1)"
-    opsec_debug "Tor bootstrap: $(grep 'Bootstrapped' /run/tor/notices.log 2>/dev/null | tail -1 || echo NONE)"
+    opsec_debug "Tor status: $(systemctl is-active "$TOR_SERVICE" 2>&1)"
+    opsec_debug "Tor bootstrap: $(tor_bootstrap_line)"
     opsec_debug "Tor TCP ports:"
     ss -tlnp 2>/dev/null | grep -E ":(9040|9050|5353)" >> "$DEBUG_LOG" 2>&1
     opsec_debug "Tor UDP ports:"
     ss -ulnp 2>/dev/null | grep -E ":5353" >> "$DEBUG_LOG" 2>&1
-    opsec_debug "Kill switch chain rule count: $(iptables -L GP_FW --line-numbers 2>/dev/null | tail -n +3 | wc -l)"
-    opsec_debug "NAT chain (GP_NAT) rule count: $(iptables -t nat -L GP_NAT --line-numbers 2>/dev/null | tail -n +3 | wc -l)"
+    opsec_debug "Strict nftables policy: $(/usr/local/bin/opsec-killswitch.sh strict-status >/dev/null 2>&1 && echo VERIFIED || echo UNVERIFIED)"
     opsec_debug "State file: $([ -f "$STATE_FILE" ] && echo EXISTS || echo MISSING)"
     opsec_debug "Network interfaces:"
     ip -br addr 2>/dev/null >> "$DEBUG_LOG" 2>&1
@@ -684,7 +922,7 @@ DNSEOF
 # ─── OFF ─────────────────────────────────────────────────────────────────────
 mode_off() {
     # Block mode_off on paranoid levels
-    if is_paranoid; then
+    if is_paranoid && [ ! -f "$FAILED_FILE" ] && [ ! -f "$UNSAFE_FILE" ] && [ ! -f "$ACTIVATING_FILE" ]; then
         echo ""
         opsec_red "BLOCKED: Cannot disable ghost mode on paranoid level."
         opsec_red "Current level: ${DEPLOYMENT_LEVEL:-unknown} (LEVEL_TYPE=paranoid)"
@@ -694,6 +932,8 @@ mode_off() {
         echo ""
         exit 1
     fi
+
+    cancel_activation_watchdog
 
     echo ""
     opsec_hdr "DEACTIVATING GHOST MODE"
@@ -705,7 +945,8 @@ mode_off() {
     _mode_off_rearm() {
         echo ""
         opsec_red "INTERRUPTED — re-arming kill switch to prevent exposure"
-        /usr/local/bin/opsec-killswitch.sh on 2>/dev/null
+        /usr/local/bin/opsec-killswitch.sh strict-on 2>/dev/null || \
+            /usr/local/bin/opsec-killswitch.sh emergency-on 2>/dev/null || true
         opsec_debug "mode_off interrupted — kill switch re-armed"
         exit 1
     }
@@ -714,6 +955,39 @@ mode_off() {
     # Signal any running mode_on bootstrap loop to stop immediately
     touch "$BOOTSTRAP_STOP"
     opsec_debug "  Stop signal sent to bootstrap loop"
+
+    # Stop the disposable browser cgroup and restore every persistent browser
+    # policy mutation before opening normal networking.
+    if ! stop_identity_apps; then
+        mark_failed_closed "dirty browsers could not be stopped before policy restoration"
+        return 1
+    fi
+    local browser_uid
+    local -a browser_uids=()
+    browser_uid=$(cat "$BROWSER_UID_FILE" 2>/dev/null || true)
+    [[ "$browser_uid" =~ ^[0-9]+$ ]] && browser_uids+=("$browser_uid")
+    if [ -d /var/lib/opsec/browser-policy ]; then
+        while IFS= read -r browser_uid; do
+            [[ "$browser_uid" =~ ^[0-9]+$ ]] || continue
+            [[ " ${browser_uids[*]} " == *" $browser_uid "* ]] || browser_uids+=("$browser_uid")
+        done < <(find /var/lib/opsec/browser-policy -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null)
+    fi
+    for browser_uid in "${browser_uids[@]}"; do
+        DESKTOP_UID="$browser_uid"
+        DESKTOP_USER=$(getent passwd "$browser_uid" | cut -d: -f1)
+        DESKTOP_HOME=$(getent passwd "$browser_uid" | cut -d: -f6)
+        if [ -n "$DESKTOP_USER" ]; then
+            timeout 25 systemctl --user --machine="${DESKTOP_USER}@.host" stop opsec-browser.service >/dev/null 2>&1 || true
+            if systemctl --user --machine="${DESKTOP_USER}@.host" is-active opsec-browser.service >/dev/null 2>&1; then
+                mark_failed_closed "OPSEC Browser cgroup did not stop"
+                return 1
+            fi
+        fi
+        if ! /usr/local/bin/opsec-browser-policy.sh recover "$browser_uid"; then
+            mark_failed_closed "dirty-browser policy restoration failed"
+            return 1
+        fi
+    done
 
     # Stop sentry if running
     opsec_debug "Stopping sentry..."
@@ -730,9 +1004,10 @@ mode_off() {
     # Clear break-glass if active
     rm -f "$BREAKGLASS_STATE"
 
-    # 1. Disarm kill switch
+    # 1. Disarm kill switch only after browser policy restoration succeeds.
     opsec_info "Disarming kill switch..."
     opsec_debug "Step 1: Disarming kill switch"
+    /usr/local/bin/opsec-killswitch.sh strict-off
     /usr/local/bin/opsec-killswitch.sh off
     local ks_off_exit=$?
     opsec_debug "  Kill switch off exit code: ${ks_off_exit}"
@@ -787,15 +1062,15 @@ EOF
     # 3. Restore stock torrc and stop Tor
     opsec_info "Restoring default Tor configuration..."
     opsec_debug "Step 3: Stopping Tor"
-    opsec_debug "  Tor status before: $(systemctl is-active tor 2>&1)"
+    opsec_debug "  Tor status before: $(systemctl is-active "$TOR_SERVICE" 2>&1)"
     if [ -f "$TORRC_DEFAULT" ]; then
         cp "$TORRC_DEFAULT" /etc/tor/torrc
         opsec_debug "  Restored torrc from ${TORRC_DEFAULT}"
     else
         opsec_debug "  WARNING: ${TORRC_DEFAULT} not found"
     fi
-    systemctl stop tor 2>/dev/null || true
-    opsec_debug "  Tor status after: $(systemctl is-active tor 2>&1)"
+    systemctl stop "$TOR_SERVICE" 2>/dev/null || true
+    opsec_debug "  Tor status after: $(systemctl is-active "$TOR_SERVICE" 2>&1)"
     opsec_green "Tor stopped, default torrc restored"
 
     # 4. Revert system hardening
@@ -861,7 +1136,25 @@ EOF
     opsec_green "Boot services disabled"
 
     # 8. Remove state marker (keep boot marker if user wants it)
-    rm -f "$STATE_FILE"
+    rm -f "$STATE_FILE" "$ACTIVATING_FILE" "$FAILED_FILE" "$UNSAFE_FILE" "$BROWSER_UID_FILE"
+    if [ -f /run/opsec/browser-recovery.masks ]; then
+        while IFS= read -r unit; do
+            case "$unit" in
+                NetworkManager.service|networking.service|systemd-networkd.service)
+                    systemctl unmask --runtime "$unit" >/dev/null 2>&1 || true
+                    systemctl start "$unit" >/dev/null 2>&1 || true ;;
+            esac
+        done < /run/opsec/browser-recovery.masks
+        rm -f /run/opsec/browser-recovery.masks
+    fi
+    if [ -f "$IDENTITY_SERVICE_STATE" ]; then
+        while IFS= read -r service; do
+            case "$service" in
+                tailscaled.service|avahi-daemon.service) systemctl start "$service" >/dev/null 2>&1 || true ;;
+            esac
+        done < "$IDENTITY_SERVICE_STATE"
+        rm -f "$IDENTITY_SERVICE_STATE"
+    fi
     opsec_green "State marker removed"
     opsec_debug "Step 8: State marker removed"
 
@@ -881,7 +1174,7 @@ EOF
     opsec_debug "--- MODE OFF FINAL STATE ---"
     opsec_debug "  Hostname: $(hostname)"
     opsec_debug "  DNS: $(cat /etc/resolv.conf 2>/dev/null | tr '\n' ' ')"
-    opsec_debug "  Tor: $(systemctl is-active tor 2>&1)"
+    opsec_debug "  Tor: $(systemctl is-active "$TOR_SERVICE" 2>&1)"
     opsec_debug "  iptables OUTPUT rules: $(iptables -L OUTPUT --line-numbers 2>/dev/null | tail -n +3 | wc -l)"
     opsec_debug "  State file exists: $([ -f "$STATE_FILE" ] && echo YES || echo NO)"
     opsec_debug "=== MODE OFF COMPLETE ==="
@@ -909,7 +1202,8 @@ mode_breakglass() {
     opsec_dim "Auto-expires in $((BREAKGLASS_TIMEOUT / 60)) minutes"
     echo ""
 
-    # Drop kill switch only
+    # Drop the strict policy only for this time-limited emergency override.
+    /usr/local/bin/opsec-killswitch.sh strict-off
     /usr/local/bin/opsec-killswitch.sh off
 
     # Write state file with expiry timestamp
@@ -930,7 +1224,7 @@ mode_breakglass() {
         exec 9>&-   # Release lock fd — don't hold it during sleep
         sleep "$BREAKGLASS_TIMEOUT"
         if [ -f "$BREAKGLASS_STATE" ]; then
-            /usr/local/bin/opsec-killswitch.sh on
+            /usr/local/bin/opsec-killswitch.sh strict-on
             rm -f "$BREAKGLASS_STATE"
             echo "[$(date -Is)] BREAKGLASS EXPIRED — kill switch re-armed" >> "$PREFLIGHT_LOG"
             # Re-run preflight
@@ -953,7 +1247,7 @@ mode_breakglass_off() {
     echo ""
 
     # Re-arm kill switch
-    /usr/local/bin/opsec-killswitch.sh on
+    /usr/local/bin/opsec-killswitch.sh strict-on
     rm -f "$BREAKGLASS_STATE"
 
     echo "[$(date -Is)] BREAKGLASS ENDED MANUALLY — kill switch re-armed" >> "$PREFLIGHT_LOG"
@@ -982,10 +1276,25 @@ mode_status() {
     echo ""
 
     # Mode state
-    if [ -f "$STATE_FILE" ]; then
+    if [ -f "$UNSAFE_FILE" ]; then
+        opsec_red "Mode: ACTIVATION UNSAFE (network containment unverified)"
+    elif [ -f "$FAILED_FILE" ]; then
+        opsec_red "Mode: FAILED-CLOSED (network blocked; run sudo opsec-mode off)"
+    elif [ -f "$ACTIVATING_FILE" ]; then
+        opsec_yellow "Mode: ACTIVATING (strict firewall armed)"
+    elif [ -f "$STATE_FILE" ]; then
         opsec_green "Mode: GHOST (active)"
     else
         opsec_yellow "Mode: BASE PRIVACY"
+    fi
+
+    if [ -f "$DEBUG_LOG" ]; then
+        local last_routing
+        last_routing=$(grep -E 'TransProxy test result:|SOCKS curl output:|Transparent proxy verification failed|SOCKS proxy verification failed|Tor identity verification exhausted' "$DEBUG_LOG" 2>/dev/null | tail -4 || true)
+        if [ -n "$last_routing" ]; then
+            opsec_info "Last activation routing diagnostics:"
+            sed 's/^/    /' <<<"$last_routing"
+        fi
     fi
 
     # Level info
@@ -1013,7 +1322,7 @@ mode_status() {
 
     # ─── Tor ───
     opsec_cyan "Tor Configuration"
-    if systemctl is-active tor >/dev/null 2>&1; then
+    if systemctl is-active "$TOR_SERVICE" >/dev/null 2>&1; then
         opsec_green "  Status: Running"
         if grep -q "ExcludeExitNodes" /etc/tor/torrc 2>/dev/null; then
             local blacklist_display
@@ -1028,8 +1337,8 @@ mode_status() {
         [ -n "$rotation_val" ] && opsec_dim "  Circuit rotation: ${rotation_val}s"
 
         local isolation_val
-        isolation_val=$(grep "IsolateDestAddr" /etc/tor/torrc 2>/dev/null | head -1)
-        [ -n "$isolation_val" ] && opsec_green "  Stream isolation: ON" || opsec_dim "  Stream isolation: off"
+        isolation_val=$(grep "IsolateSOCKSAuth" /etc/tor/torrc 2>/dev/null | awk '{print $2}')
+        [ "$isolation_val" = "1" ] && opsec_green "  Stream isolation: ON" || opsec_dim "  Stream isolation: off"
 
         local padding_val
         padding_val=$(grep "ConnectionPadding" /etc/tor/torrc 2>/dev/null | awk '{print $2}')
@@ -1063,7 +1372,7 @@ mode_status() {
     # ─── Kill switch ───
     if [ -f "$BREAKGLASS_STATE" ]; then
         opsec_red "Kill Switch: DISARMED (BREAK-GLASS)"
-    elif iptables -L GP_FW >/dev/null 2>&1; then
+    elif /usr/local/bin/opsec-killswitch.sh strict-status >/dev/null 2>&1; then
         opsec_green "Kill Switch: ARMED"
     else
         opsec_yellow "Kill Switch: Off"
@@ -1144,25 +1453,15 @@ mode_diag() {
     echo "Breakglass: $([ -f "$BREAKGLASS_STATE" ] && echo ACTIVE || echo INACTIVE)"
     echo ""
     echo "--- Tor ---"
-    echo "Service: $(systemctl is-active tor 2>&1)"
+    echo "Service (${TOR_SERVICE}): $(systemctl is-active "$TOR_SERVICE" 2>&1)"
     echo "TCP ports: $(ss -tlnp 2>/dev/null | grep -E ':(9040|9050|5353)' || echo NONE)"
     echo "UDP ports: $(ss -ulnp 2>/dev/null | grep -E ':5353' || echo NONE)"
-    echo "Bootstrap: $(grep 'Bootstrapped' /run/tor/notices.log 2>/dev/null | tail -1 || echo NONE)"
+    echo "Bootstrap: $(tor_bootstrap_line)"
     echo "Last 5 log:"
-    tail -5 /run/tor/notices.log 2>/dev/null || echo "  (no log)"
+    journalctl -u "$TOR_SERVICE" -b --no-pager -n 5 2>/dev/null || echo "  (no journal entries)"
     echo ""
     echo "--- Kill Switch ---"
-    echo "Filter: $(iptables -L GP_FW >/dev/null 2>&1 && echo ARMED || echo OFF)"
-    local _diag_nat_count=0
-    if iptables -t nat -L GP_NAT >/dev/null 2>&1; then
-        _diag_nat_count=$(iptables -t nat -L GP_NAT --line-numbers 2>/dev/null | tail -n +3 | wc -l)
-        echo "NAT chain: ARMED (${_diag_nat_count} rules)"
-    else
-        echo "NAT chain: OFF"
-        local _diag_out_nat
-        _diag_out_nat=$(iptables -t nat -L OUTPUT --line-numbers 2>/dev/null | tail -n +3 | wc -l)
-        [ "$_diag_out_nat" -gt 0 ] && echo "NAT OUTPUT fallback: ${_diag_out_nat} rules"
-    fi
+    echo "Strict nftables: $(/usr/local/bin/opsec-killswitch.sh strict-status >/dev/null 2>&1 && echo VERIFIED || echo OFF/UNVERIFIED)"
     echo ""
     echo "--- DNS ---"
     echo "Resolver: $(grep nameserver /etc/resolv.conf 2>/dev/null | tr '\n' ' ')"

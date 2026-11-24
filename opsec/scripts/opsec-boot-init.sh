@@ -59,24 +59,33 @@ if [ -f "$BOOT_MARKER" ]; then
 else
     echo "[opsec-boot] Standard level, no boot marker — applying base privacy hardening"
 
-    # Apply base hardening inline (cannot source opsec-mode.sh — its exit kills the caller)
-    echo "[opsec-boot] Applying inline base hardening..."
-    sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
-    sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
-    swapoff -a 2>/dev/null || true
-    sysctl -w kernel.core_pattern='|/bin/false' >/dev/null 2>&1 || true
+    if [ -x /usr/local/bin/opsec-mode.sh ]; then
+        # Source the mode script to access mode_base function
+        . /usr/local/bin/opsec-mode.sh <<< "" 2>/dev/null || true
+        # If sourcing doesn't work, call the base hardening directly
+        if type mode_base >/dev/null 2>&1; then
+            mode_base
+        else
+            # Fallback: apply minimal base hardening inline
+            echo "[opsec-boot] Applying inline base hardening..."
+            sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
+            sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
+            swapoff -a 2>/dev/null || true
+            sysctl -w kernel.core_pattern='|/bin/false' >/dev/null 2>&1 || true
 
-    # Set privacy DNS
-    base_dns="${BASE_DNS:-quad9}"
-    chattr -i /etc/resolv.conf 2>/dev/null || true
-    case "$base_dns" in
-        quad9)
-            printf "nameserver 9.9.9.9\nnameserver 149.112.112.112\n" > /etc/resolv.conf
-            ;;
-        cloudflare)
-            printf "nameserver 1.1.1.1\nnameserver 1.0.0.1\n" > /etc/resolv.conf
-            ;;
-    esac
+            # Set privacy DNS
+            local base_dns="${BASE_DNS:-quad9}"
+            chattr -i /etc/resolv.conf 2>/dev/null || true
+            case "$base_dns" in
+                quad9)
+                    printf "nameserver 9.9.9.9\nnameserver 149.112.112.112\n" > /etc/resolv.conf
+                    ;;
+                cloudflare)
+                    printf "nameserver 1.1.1.1\nnameserver 1.0.0.1\n" > /etc/resolv.conf
+                    ;;
+            esac
+        fi
+    fi
 
     echo "[opsec-boot] Base privacy hardening applied"
 fi
