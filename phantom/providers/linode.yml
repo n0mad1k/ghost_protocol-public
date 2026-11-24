@@ -30,7 +30,7 @@
         url: https://api.linode.com/v4/linode/instances
         method: POST
         headers:
-          Authorization: "Bearer {{ linode_token }}"
+          Authorization: "Bearer {{ lookup('env', 'LINODE_TOKEN') }}"
           Content-Type: application/json
         body_format: json
         body:

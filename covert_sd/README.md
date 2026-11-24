@@ -41,7 +41,7 @@ The **Covert SD Card Tool** is a Python script designed to automate the process 
 
    ```bash
    git clone https://git.churchofmalware.org/n0mad1k/CoM-ghost_protocol.git
-   cd ghost_protocol/covert_sd
+   cd CoM-ghost_protocol/covert_sd
    ```
 
 2. **Make the Script Executable:**
