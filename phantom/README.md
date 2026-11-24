@@ -6,14 +6,50 @@ Deploy self-hosted privacy infrastructure with a single command. Supports cloud 
 
 | Service | Status | Description |
 |---|---|---|
-| Matrix + Element | Ready | Encrypted messaging homeserver with web client |
-| WireGuard VPN | Ready | Private VPN server with client config generation |
-| Pi-hole DNS | Ready | Ad-blocking DNS server (native) |
-| Nextcloud | Ready | Self-hosted file sync and collaboration |
-| Vaultwarden | Ready | Self-hosted Bitwarden password manager |
-| Jellyfin | Ready | Self-hosted media server |
-| Mail-in-a-Box | Ready | Self-hosted email |
-| All-in-One | Ready | Multiple services on one server with nginx reverse proxy |
+| Matrix + Element | Partial | Encrypted messaging homeserver with web client |
+| WireGuard VPN | Partial | Private VPN server with client config generation |
+| Pi-hole DNS | Partial | Ad-blocking DNS server (native) |
+| Nextcloud | Partial | Self-hosted file sync and collaboration |
+| Vaultwarden | Untested | Self-hosted Bitwarden password manager |
+| Jellyfin | Untested | Self-hosted media server |
+| Mail-in-a-Box | Untested | Self-hosted email |
+| All-in-One | Untested | Multiple services on one server with nginx reverse proxy |
+
+## Tested Deployments
+
+| Service | Provider | Target | Result |
+|---|---|---|---|
+| Matrix + Element | Linode | Cloud (Ubuntu) | Passed |
+| Matrix + Element | AWS | Cloud (Ubuntu) | Untested |
+| Matrix + Element | FlokiNET | Cloud | Untested |
+| Matrix + Element | Existing Server | Local (Debian 13) | Passed |
+| Matrix + Element | Existing Server | Local (Raspbian) | Untested |
+| WireGuard VPN | Linode | Cloud (Ubuntu) | Untested |
+| WireGuard VPN | AWS | Cloud (Ubuntu) | Untested |
+| WireGuard VPN | FlokiNET | Cloud | Untested |
+| WireGuard VPN | Existing Server | Local (Debian 13) | Passed |
+| WireGuard VPN | Existing Server | Local (Raspbian) | Untested |
+| Pi-hole DNS | Linode | Cloud (Ubuntu) | Untested |
+| Pi-hole DNS | AWS | Cloud (Ubuntu) | Untested |
+| Pi-hole DNS | Existing Server | Local (Debian 13) | Passed |
+| Pi-hole DNS | Existing Server | Local (Raspbian) | Untested |
+| Nextcloud | Linode | Cloud (Ubuntu) | Untested |
+| Nextcloud | AWS | Cloud (Ubuntu) | Untested |
+| Nextcloud | FlokiNET | Cloud | Untested |
+| Nextcloud | Existing Server | Local (Debian 13) | Passed |
+| Vaultwarden | Linode | Cloud (Ubuntu) | Untested |
+| Vaultwarden | AWS | Cloud (Ubuntu) | Untested |
+| Vaultwarden | FlokiNET | Cloud | Untested |
+| Vaultwarden | Existing Server | Local (Debian 13) | Untested |
+| Jellyfin | Linode | Cloud (Ubuntu) | Untested |
+| Jellyfin | AWS | Cloud (Ubuntu) | Untested |
+| Jellyfin | Existing Server | Local (Debian 13) | Untested |
+| Jellyfin | Existing Server | Local (Raspbian) | Untested |
+| Mail-in-a-Box | Linode | Cloud (Ubuntu) | Untested |
+| Mail-in-a-Box | AWS | Cloud (Ubuntu) | Untested |
+| All-in-One | Linode | Cloud (Ubuntu) | Untested |
+| All-in-One | AWS | Cloud (Ubuntu) | Untested |
+| All-in-One | Existing Server | Local (Debian 13) | Untested |
 
 ## Deployment Targets
 

@@ -1,0 +1,37 @@
+---
+- name: Deploy Git Server
+  hosts: all
+  become: true
+  vars:
+    git_platform: "{{ git_platform | default('forgejo') }}"
+    git_domain: "{{ domain }}"
+    git_ssh_port: "{{ git_ssh_port | default('2222') }}"
+    git_admin_user: "{{ git_admin_user | default('sysadmin') }}"
+    git_admin_password: "{{ git_admin_password }}"
+    git_admin_email: "{{ git_admin_email | default('admin@localhost') }}"
+    git_local_port: "{{ '8929' if git_platform == 'gitlab' else '3000' }}"
+    target_host: "{{ target_host | default('localhost') }}"
+
+  tasks:
+    - name: Include Forgejo installation
+      include_tasks: tasks/install_forgejo.yml
+      when: git_platform == "forgejo"
+
+    - name: Include GitLab CE installation
+      include_tasks: tasks/install_gitlab.yml
+      when: git_platform == "gitlab"
+
+    - name: Configure Cloudflare Tunnel
+      include_tasks: ../common/tasks/cloudflare_tunnel.yml
+      when: cf_tunnel_token is defined and cf_tunnel_token != ""
+
+    - name: Include Forgejo configuration
+      include_tasks: tasks/configure_forgejo.yml
+      when: git_platform == "forgejo"
+
+    - name: Include GitLab CE configuration
+      include_tasks: tasks/configure_gitlab.yml
+      when: git_platform == "gitlab"
+
+    - name: Include Git server nginx reverse proxy
+      include_tasks: tasks/nginx.yml

@@ -2,7 +2,7 @@
 # Nextcloud database, app, and service configuration
 
 - name: Generate MariaDB password for Nextcloud
-  command: openssl rand -base64 24
+  shell: LC_ALL=C tr -dc A-Za-z0-9 < /dev/urandom | head -c 32
   register: nc_db_password_gen
   args:
     creates: /var/www/nextcloud/.db_password
@@ -42,25 +42,13 @@
     state: present
     login_unix_socket: /var/run/mysqld/mysqld.sock
 
-- name: Generate admin password
-  command: openssl rand -base64 16
-  register: nc_admin_password_gen
-  args:
-    creates: /var/www/nextcloud/.admin_password
-
 - name: Save admin password
   copy:
-    content: "{{ nc_admin_password_gen.stdout }}"
+    content: "{{ cloud_admin_password }}"
     dest: /var/www/nextcloud/.admin_password
     owner: www-data
     group: www-data
     mode: "0600"
-  when: nc_admin_password_gen.changed
-
-- name: Read saved admin password
-  slurp:
-    src: /var/www/nextcloud/.admin_password
-  register: nc_admin_password_file
 
 - name: Configure PHP-FPM pool for Nextcloud
   copy:
@@ -113,7 +101,7 @@
     --database-user nextcloud
     --database-pass "{{ nc_db_pass }}"
     --admin-user "{{ nextcloud_admin }}"
-    --admin-pass "{{ (nc_admin_password_file.content | b64decode).strip() }}"
+    --admin-pass "{{ cloud_admin_password }}"
     --data-dir /var/www/nextcloud/data
   args:
     creates: /var/www/nextcloud/config/config.php
@@ -143,6 +131,39 @@
 - name: Set default phone region
   become_user: www-data
   command: "php /var/www/nextcloud/occ config:system:set default_phone_region --value=US"
+  changed_when: true
+
+- name: Clear default skeleton files
+  file:
+    path: /var/www/nextcloud/core/skeleton
+    state: "{{ item }}"
+    owner: www-data
+    group: www-data
+  loop:
+    - absent
+    - directory
+
+- name: Set empty skeleton directory
+  become_user: www-data
+  command: "php /var/www/nextcloud/occ config:system:set skeletondirectory --value="
+  changed_when: true
+
+- name: Remove default files from admin user
+  shell: |
+    rm -rf /var/www/nextcloud/data/{{ nextcloud_admin }}/files/Documents
+    rm -rf /var/www/nextcloud/data/{{ nextcloud_admin }}/files/Photos
+    rm -rf /var/www/nextcloud/data/{{ nextcloud_admin }}/files/Templates
+    rm -f /var/www/nextcloud/data/{{ nextcloud_admin }}/files/Nextcloud.png
+    rm -f "/var/www/nextcloud/data/{{ nextcloud_admin }}/files/Nextcloud intro.mp4"
+    rm -f "/var/www/nextcloud/data/{{ nextcloud_admin }}/files/Nextcloud Manual.pdf"
+    rm -f /var/www/nextcloud/data/{{ nextcloud_admin }}/files/Readme.md
+    rm -f "/var/www/nextcloud/data/{{ nextcloud_admin }}/files/Reasons to use Nextcloud.pdf"
+    rm -f "/var/www/nextcloud/data/{{ nextcloud_admin }}/files/Templates credits.md"
+  changed_when: true
+
+- name: Rescan admin files after cleanup
+  become_user: www-data
+  command: "php /var/www/nextcloud/occ files:scan {{ nextcloud_admin }}"
   changed_when: true
 
 - name: Deploy Nextcloud cron systemd timer

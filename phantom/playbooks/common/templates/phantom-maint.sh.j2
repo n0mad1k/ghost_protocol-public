@@ -1,0 +1,580 @@
+#!/usr/bin/env bash
+# Phantom — Maintenance Routine
+# Deployed by phantom to {{ ansible_host | default('this server') }}
+# Runs weekly via systemd timer or manually from phantom manage menu.
+#
+# Exit codes: 0=OK, 1=warnings, 2=critical (service down)
+set -uo pipefail
+
+CONFIG_FILE="/opt/phantom-maint/config"
+LOG_FILE="/var/log/phantom-maint.log"
+REPORT=""
+EXIT_CODE=0
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S %Z')
+
+# ── Load Config ────────────────────────────────────────────────────────────
+if [ ! -f "${CONFIG_FILE}" ]; then
+    echo "[-] Config file not found: ${CONFIG_FILE}"
+    exit 2
+fi
+# shellcheck source=/dev/null
+source "${CONFIG_FILE}"
+
+SERVICE_TYPE="${SERVICE_TYPE:-unknown}"
+DOMAIN="${DOMAIN:-}"
+GIT_PLATFORM="${GIT_PLATFORM:-}"
+SERVICES="${SERVICES:-}"
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+log() {
+    local msg="[$(date '+%H:%M:%S')] $1"
+    echo "${msg}"
+    REPORT="${REPORT}${msg}\n"
+}
+
+log_ok()   { log "[+] $1"; }
+log_warn() { log "[!] $1"; [ "${EXIT_CODE}" -lt 1 ] && EXIT_CODE=1; }
+log_err()  { log "[-] $1"; EXIT_CODE=2; }
+log_info() { log "[~] $1"; }
+
+# ── Common: OS Updates ────────────────────────────────────────────────────
+run_os_updates() {
+    log_info "Running OS updates..."
+    export DEBIAN_FRONTEND=noninteractive
+    if apt-get update -qq 2>&1; then
+        UPGRADE_OUTPUT=$(apt-get upgrade -y -qq 2>&1)
+        UPGRADED=$(echo "${UPGRADE_OUTPUT}" | grep -c "^Inst " || true)
+        if [ "${UPGRADED}" -gt 0 ]; then
+            log_ok "Upgraded ${UPGRADED} package(s)"
+        else
+            log_ok "System packages up to date"
+        fi
+    else
+        log_warn "apt-get update failed"
+    fi
+}
+
+# ── Common: Docker Prune ──────────────────────────────────────────────────
+run_docker_prune() {
+    if ! command -v docker &>/dev/null; then
+        return
+    fi
+    log_info "Pruning Docker resources..."
+    IMAGES_PRUNED=$(docker image prune -af --filter "until=168h" 2>&1 | tail -1)
+    VOLUMES_PRUNED=$(docker volume prune -f 2>&1 | tail -1)
+    docker builder prune -f --keep-storage=2GB 2>/dev/null || true
+    log_ok "Docker prune complete (${IMAGES_PRUNED})"
+}
+
+# ── Common: Certbot Renew ─────────────────────────────────────────────────
+run_certbot_renew() {
+    if ! command -v certbot &>/dev/null; then
+        return
+    fi
+    log_info "Checking certificate renewal..."
+    RENEW_OUTPUT=$(certbot renew --quiet 2>&1) || true
+    if echo "${RENEW_OUTPUT}" | grep -q "renewed"; then
+        log_ok "Certificate(s) renewed"
+    else
+        log_ok "Certificates up to date"
+    fi
+}
+
+# ── Common: Disk Usage ────────────────────────────────────────────────────
+check_disk_usage() {
+    log_info "Checking disk usage..."
+    DISK_PCT=$(df / | awk 'NR==2 {gsub(/%/,""); print $5}')
+    if [ "${DISK_PCT}" -ge 90 ]; then
+        log_err "Disk usage CRITICAL: ${DISK_PCT}%"
+    elif [ "${DISK_PCT}" -ge 80 ]; then
+        log_warn "Disk usage WARNING: ${DISK_PCT}%"
+    else
+        log_ok "Disk usage: ${DISK_PCT}%"
+    fi
+}
+
+# ── Common: Memory Check ──────────────────────────────────────────────────
+check_memory() {
+    log_info "Checking memory..."
+    MEM_TOTAL=$(free -m | awk '/^Mem:/ {print $2}')
+    MEM_AVAIL=$(free -m | awk '/^Mem:/ {print $7}')
+    MEM_PCT=$(( (MEM_TOTAL - MEM_AVAIL) * 100 / MEM_TOTAL ))
+    if [ "${MEM_PCT}" -ge 90 ]; then
+        log_warn "Memory usage: ${MEM_PCT}% (${MEM_AVAIL}MB available of ${MEM_TOTAL}MB)"
+    else
+        log_ok "Memory usage: ${MEM_PCT}% (${MEM_AVAIL}MB available of ${MEM_TOTAL}MB)"
+    fi
+}
+
+# ── Common: Fail2ban Status ───────────────────────────────────────────────
+check_fail2ban() {
+    if ! command -v fail2ban-client &>/dev/null; then
+        return
+    fi
+    log_info "Checking fail2ban..."
+    if systemctl is-active --quiet fail2ban 2>/dev/null; then
+        JAILS=$(fail2ban-client status 2>/dev/null | grep "Jail list" | sed 's/.*://;s/,//g' | xargs)
+        TOTAL_BANNED=0
+        for jail in ${JAILS}; do
+            BANNED=$(fail2ban-client status "${jail}" 2>/dev/null | grep "Currently banned" | awk '{print $NF}')
+            TOTAL_BANNED=$(( TOTAL_BANNED + BANNED ))
+        done
+        log_ok "Fail2ban active — ${TOTAL_BANNED} IP(s) currently banned across: ${JAILS}"
+    else
+        log_warn "Fail2ban installed but not running"
+    fi
+}
+
+# ── Docker Rollback Pattern ───────────────────────────────────────────────
+# Usage: docker_rollback <container_name> <health_url> <health_timeout>
+docker_rollback() {
+    local NAME="$1"
+    local HEALTH_URL="$2"
+    local HEALTH_TIMEOUT="${3:-30}"
+    local ARGS_FILE="/opt/phantom-maint/docker-args/${NAME}.env"
+
+    if [ ! -f "${ARGS_FILE}" ]; then
+        log_warn "No saved docker args for ${NAME} at ${ARGS_FILE} — skipping update"
+        return 1
+    fi
+
+    log_info "Updating container: ${NAME}..."
+
+    # Read saved image name from args file
+    # shellcheck source=/dev/null
+    source "${ARGS_FILE}"
+    local IMAGE="${DOCKER_IMAGE:-}"
+    if [ -z "${IMAGE}" ]; then
+        log_warn "No DOCKER_IMAGE in ${ARGS_FILE} — skipping"
+        return 1
+    fi
+
+    # Pull new image
+    local OLD_DIGEST
+    OLD_DIGEST=$(docker inspect --format='{{ '{{' }}.Image{{ '}}' }}' "${NAME}" 2>/dev/null || echo "")
+    docker pull "${IMAGE}" 2>&1 | tail -1
+    local NEW_DIGEST
+    NEW_DIGEST=$(docker inspect --format='{{ '{{' }}.Id{{ '}}' }}' "${IMAGE}" 2>/dev/null || echo "")
+
+    if [ "${OLD_DIGEST}" = "${NEW_DIGEST}" ] && [ -n "${OLD_DIGEST}" ]; then
+        log_ok "${NAME}: already on latest image"
+        return 0
+    fi
+
+    # Stop and rename current container
+    docker stop "${NAME}" 2>/dev/null || true
+    docker rename "${NAME}" "${NAME}-rollback" 2>/dev/null || true
+
+    # Start new container with saved args
+    local DOCKER_RUN_ARGS="${DOCKER_RUN_ARGS:-}"
+    if [ -z "${DOCKER_RUN_ARGS}" ]; then
+        log_warn "No DOCKER_RUN_ARGS in ${ARGS_FILE} — cannot recreate container"
+        # Restore rollback
+        docker rename "${NAME}-rollback" "${NAME}" 2>/dev/null || true
+        docker start "${NAME}" 2>/dev/null || true
+        return 1
+    fi
+
+    # Run new container
+    eval "docker run -d --name ${NAME} ${DOCKER_RUN_ARGS} ${IMAGE}" 2>&1 || true
+
+    # Health check with timeout
+    log_info "Health checking ${NAME} (${HEALTH_TIMEOUT}s timeout)..."
+    local ELAPSED=0
+    local HEALTHY=false
+    while [ "${ELAPSED}" -lt "${HEALTH_TIMEOUT}" ]; do
+        if curl -sf --max-time 5 "${HEALTH_URL}" >/dev/null 2>&1; then
+            HEALTHY=true
+            break
+        fi
+        sleep 5
+        ELAPSED=$(( ELAPSED + 5 ))
+    done
+
+    if [ "${HEALTHY}" = true ]; then
+        log_ok "${NAME}: updated and healthy"
+        docker rm -f "${NAME}-rollback" 2>/dev/null || true
+        return 0
+    else
+        log_err "${NAME}: health check failed after update — rolling back"
+        docker stop "${NAME}" 2>/dev/null || true
+        docker rm "${NAME}" 2>/dev/null || true
+        docker rename "${NAME}-rollback" "${NAME}" 2>/dev/null || true
+        docker start "${NAME}" 2>/dev/null || true
+        # Verify rollback health
+        sleep 5
+        if curl -sf --max-time 5 "${HEALTH_URL}" >/dev/null 2>&1; then
+            log_warn "${NAME}: rolled back successfully"
+        else
+            log_err "${NAME}: rollback container also unhealthy"
+        fi
+        return 1
+    fi
+}
+
+# ── Per-Service Health Checks ─────────────────────────────────────────────
+health_check() {
+    local SVC="$1"
+    log_info "Health check: ${SVC}..."
+
+    case "${SVC}" in
+        email)
+            if command -v docker &>/dev/null && [ -d /opt/mailcow-dockerized ]; then
+                cd /opt/mailcow-dockerized
+                RUNNING=$(docker compose ps --format json 2>/dev/null | grep -c '"running"' || echo "0")
+                if [ "${RUNNING}" -gt 0 ]; then
+                    log_ok "email: ${RUNNING} container(s) running"
+                else
+                    log_err "email: no containers running"
+                fi
+                # Check API
+                if curl -sf --max-time 10 "http://127.0.0.1:8080/api/v1/get/status/containers" >/dev/null 2>&1; then
+                    log_ok "email: API responding"
+                else
+                    log_warn "email: API not responding on port 8080"
+                fi
+            else
+                log_warn "email: mailcow not found at /opt/mailcow-dockerized"
+            fi
+            ;;
+        matrix)
+            if curl -sf --max-time 10 "http://127.0.0.1:8008/_matrix/client/versions" >/dev/null 2>&1; then
+                log_ok "matrix: Synapse responding"
+            else
+                log_err "matrix: Synapse not responding on port 8008"
+            fi
+            ;;
+        vpn)
+            if command -v wg &>/dev/null; then
+                WG_IFACES=$(wg show interfaces 2>/dev/null)
+                if [ -n "${WG_IFACES}" ]; then
+                    log_ok "vpn: WireGuard active — interfaces: ${WG_IFACES}"
+                else
+                    log_err "vpn: WireGuard no active interfaces"
+                fi
+            else
+                log_warn "vpn: wg command not found"
+            fi
+            ;;
+        dns)
+            if systemctl is-active --quiet AdGuardHome 2>/dev/null; then
+                log_ok "dns: AdGuard Home service active"
+            else
+                log_err "dns: AdGuard Home service not active"
+            fi
+            if curl -sf --max-time 10 "http://127.0.0.1:3000/" >/dev/null 2>&1; then
+                log_ok "dns: AdGuard web UI responding on port 3000"
+            else
+                log_warn "dns: AdGuard web UI not responding on port 3000"
+            fi
+            ;;
+        cloud)
+            if command -v php &>/dev/null; then
+                OCC_STATUS=$(sudo -u www-data php /var/www/nextcloud/occ status --output=json 2>/dev/null || echo "{}")
+                if echo "${OCC_STATUS}" | grep -q '"installed":true'; then
+                    log_ok "cloud: Nextcloud installed and responding"
+                else
+                    log_err "cloud: Nextcloud occ status check failed"
+                fi
+            else
+                log_warn "cloud: php not found"
+            fi
+            ;;
+        vault)
+            if curl -sf --max-time 10 "http://127.0.0.1:8081/alive" >/dev/null 2>&1; then
+                log_ok "vault: Vaultwarden alive"
+            else
+                log_err "vault: Vaultwarden not responding on port 8081"
+            fi
+            ;;
+        media)
+            if curl -sf --max-time 10 "http://127.0.0.1:8096/health" >/dev/null 2>&1; then
+                log_ok "media: Jellyfin healthy"
+            else
+                log_err "media: Jellyfin not responding on port 8096"
+            fi
+            ;;
+        git)
+            case "${GIT_PLATFORM}" in
+                forgejo|gitea)
+                    if curl -sf --max-time 10 "http://127.0.0.1:3000/" >/dev/null 2>&1; then
+                        log_ok "git: ${GIT_PLATFORM} responding on port 3000"
+                    else
+                        log_err "git: ${GIT_PLATFORM} not responding on port 3000"
+                    fi
+                    ;;
+                gitlab)
+                    if curl -sf --max-time 10 "http://127.0.0.1:80/-/readiness" >/dev/null 2>&1; then
+                        log_ok "git: GitLab responding"
+                    else
+                        log_err "git: GitLab readiness check failed"
+                    fi
+                    ;;
+                *)
+                    log_warn "git: unknown platform '${GIT_PLATFORM}'"
+                    ;;
+            esac
+            ;;
+        voip)
+            if command -v docker &>/dev/null; then
+                if docker exec izpbx fwconsole status >/dev/null 2>&1; then
+                    log_ok "voip: izPBX FreePBX responding"
+                elif curl -sf --max-time 10 "https://127.0.0.1:443/" -k >/dev/null 2>&1; then
+                    log_ok "voip: web UI responding on port 443"
+                else
+                    log_err "voip: not responding"
+                fi
+            else
+                log_warn "voip: docker not found"
+            fi
+            ;;
+        *)
+            log_warn "Unknown service type: ${SVC}"
+            ;;
+    esac
+}
+
+# ── Per-Service Updates ───────────────────────────────────────────────────
+update_service() {
+    local SVC="$1"
+    log_info "Updating service: ${SVC}..."
+
+    case "${SVC}" in
+        email)
+            if [ -d /opt/mailcow-dockerized ]; then
+                cd /opt/mailcow-dockerized
+                log_info "Pulling latest Mailcow images..."
+                docker compose pull 2>&1 | tail -3
+                docker compose up -d 2>&1 | tail -3
+                log_ok "email: Mailcow updated"
+            else
+                log_warn "email: /opt/mailcow-dockerized not found"
+            fi
+            ;;
+        matrix)
+            if dpkg -l matrix-synapse-py3 &>/dev/null; then
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update -qq 2>/dev/null
+                apt-get upgrade -y -qq matrix-synapse-py3 2>&1 | tail -3
+                systemctl restart matrix-synapse 2>/dev/null || true
+                log_ok "matrix: Synapse updated"
+            else
+                log_warn "matrix: matrix-synapse-py3 package not installed"
+            fi
+            ;;
+        vpn)
+            if dpkg -l wireguard &>/dev/null; then
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update -qq 2>/dev/null
+                apt-get upgrade -y -qq wireguard 2>&1 | tail -3
+                log_ok "vpn: WireGuard updated (no restart needed)"
+            else
+                log_warn "vpn: wireguard package not installed"
+            fi
+            ;;
+        dns)
+            log_info "Checking AdGuard Home for updates..."
+            local AGH_DIR="/opt/AdGuardHome"
+            if [ ! -d "${AGH_DIR}" ]; then
+                log_warn "dns: AdGuard Home not found at ${AGH_DIR}"
+                return
+            fi
+
+            # Get current version
+            local CURRENT_VER
+            CURRENT_VER=$("${AGH_DIR}/AdGuardHome" --version 2>/dev/null | grep -oP 'v[\d.]+' | head -1 || echo "unknown")
+
+            # Get latest release version from GitHub API
+            local LATEST_VER
+            LATEST_VER=$(curl -sf "https://api.github.com/repos/AdguardTeam/AdGuardHome/releases/latest" \
+                | grep -oP '"tag_name":\s*"\K[^"]+' || echo "")
+
+            if [ -z "${LATEST_VER}" ]; then
+                log_warn "dns: could not fetch latest AdGuard version"
+                return
+            fi
+
+            if [ "${CURRENT_VER}" = "${LATEST_VER}" ]; then
+                log_ok "dns: AdGuard Home ${CURRENT_VER} is latest"
+                return
+            fi
+
+            log_info "dns: updating AdGuard Home ${CURRENT_VER} -> ${LATEST_VER}..."
+
+            # Download new binary
+            local ARCH
+            ARCH=$(uname -m)
+            case "${ARCH}" in
+                x86_64)  ARCH="amd64" ;;
+                aarch64) ARCH="arm64" ;;
+                armv7l)  ARCH="armv7" ;;
+            esac
+            local DL_URL="https://github.com/AdguardTeam/AdGuardHome/releases/download/${LATEST_VER}/AdGuardHome_linux_${ARCH}.tar.gz"
+            local TMP_DIR
+            TMP_DIR=$(mktemp -d)
+
+            if curl -sfL "${DL_URL}" -o "${TMP_DIR}/agh.tar.gz"; then
+                tar -xzf "${TMP_DIR}/agh.tar.gz" -C "${TMP_DIR}" 2>/dev/null
+                # Backup current binary
+                cp "${AGH_DIR}/AdGuardHome" "${AGH_DIR}/AdGuardHome.bak"
+                systemctl stop AdGuardHome 2>/dev/null || true
+                cp "${TMP_DIR}/AdGuardHome/AdGuardHome" "${AGH_DIR}/AdGuardHome"
+                chmod 755 "${AGH_DIR}/AdGuardHome"
+                systemctl start AdGuardHome 2>/dev/null || true
+
+                # Verify it started
+                sleep 3
+                if systemctl is-active --quiet AdGuardHome 2>/dev/null; then
+                    log_ok "dns: AdGuard Home updated to ${LATEST_VER}"
+                    rm -f "${AGH_DIR}/AdGuardHome.bak"
+                else
+                    log_err "dns: AdGuard Home failed to start after update — rolling back"
+                    cp "${AGH_DIR}/AdGuardHome.bak" "${AGH_DIR}/AdGuardHome"
+                    systemctl start AdGuardHome 2>/dev/null || true
+                    sleep 2
+                    if systemctl is-active --quiet AdGuardHome 2>/dev/null; then
+                        log_warn "dns: rolled back to ${CURRENT_VER}"
+                    else
+                        log_err "dns: rollback also failed — manual intervention needed"
+                    fi
+                fi
+            else
+                log_warn "dns: failed to download AdGuard Home ${LATEST_VER}"
+            fi
+            rm -rf "${TMP_DIR}"
+            ;;
+        cloud)
+            local NC_DIR="/var/www/nextcloud"
+            if [ ! -d "${NC_DIR}" ]; then
+                log_warn "cloud: Nextcloud not found at ${NC_DIR}"
+                return
+            fi
+            log_info "Updating Nextcloud..."
+            cd "${NC_DIR}"
+            sudo -u www-data php updater/updater.phar --no-interaction 2>&1 | tail -5 || true
+            sudo -u www-data php occ upgrade 2>&1 | tail -5 || true
+            sudo -u www-data php occ maintenance:mode --off 2>/dev/null || true
+            log_ok "cloud: Nextcloud update complete"
+            ;;
+        vault)
+            docker_rollback "vaultwarden" "http://127.0.0.1:8081/alive" 30
+            ;;
+        media)
+            if dpkg -l jellyfin &>/dev/null; then
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update -qq 2>/dev/null
+                apt-get upgrade -y -qq jellyfin 2>&1 | tail -3
+                log_ok "media: Jellyfin updated"
+            else
+                log_warn "media: jellyfin package not installed"
+            fi
+            ;;
+        git)
+            case "${GIT_PLATFORM}" in
+                forgejo|gitea)
+                    docker_rollback "${GIT_PLATFORM}" "http://127.0.0.1:3000/" 30
+                    ;;
+                gitlab)
+                    log_info "Updating GitLab CE..."
+                    export DEBIAN_FRONTEND=noninteractive
+                    apt-get update -qq 2>/dev/null
+                    apt-get upgrade -y -qq gitlab-ce 2>&1 | tail -5
+                    gitlab-ctl reconfigure 2>&1 | tail -5 || true
+                    log_ok "git: GitLab CE updated"
+                    ;;
+                *)
+                    log_warn "git: unknown platform '${GIT_PLATFORM}'"
+                    ;;
+            esac
+            ;;
+        voip)
+            if [ -d /opt/izpbx ] && command -v docker &>/dev/null; then
+                cd /opt/izpbx
+                docker compose pull 2>&1 | tail -3
+                docker compose up -d 2>&1 | tail -3
+                log_ok "voip: izPBX updated"
+            else
+                log_warn "voip: izPBX directory or docker not found"
+            fi
+            ;;
+        *)
+            log_warn "Unknown service type for update: ${SVC}"
+            ;;
+    esac
+}
+
+# ── Send Report ───────────────────────────────────────────────────────────
+send_report() {
+    local SUBJECT="Phantom Maintenance Report — ${DOMAIN:-$(hostname)} — ${TIMESTAMP}"
+    local BODY
+    BODY=$(printf "Phantom Maintenance Report\n")
+    BODY="${BODY}$(printf '=%.0s' {1..50})\n"
+    BODY="${BODY}Host: ${DOMAIN:-$(hostname)}\n"
+    BODY="${BODY}Service: ${SERVICE_TYPE}\n"
+    BODY="${BODY}Time: ${TIMESTAMP}\n"
+    BODY="${BODY}$(printf '=%.0s' {1..50})\n\n"
+    BODY="${BODY}${REPORT}\n"
+    BODY="${BODY}$(printf '=%.0s' {1..50})\n"
+    case "${EXIT_CODE}" in
+        0) BODY="${BODY}Result: OK\n" ;;
+        1) BODY="${BODY}Result: WARNINGS\n" ;;
+        2) BODY="${BODY}Result: CRITICAL\n" ;;
+    esac
+
+    # Always log to file
+    printf "${BODY}" >> "${LOG_FILE}"
+    echo "---" >> "${LOG_FILE}"
+
+    # Email if SMTP configured
+    if [ -n "${SMTP_HOST:-}" ] && [ -n "${REPORT_EMAIL:-}" ] && command -v msmtp &>/dev/null; then
+        log_info "Sending report to ${REPORT_EMAIL}..."
+        {
+            echo "From: ${SMTP_FROM:-phantom@$(hostname)}"
+            echo "To: ${REPORT_EMAIL}"
+            echo "Subject: ${SUBJECT}"
+            echo "Content-Type: text/plain; charset=UTF-8"
+            echo ""
+            printf "${BODY}"
+        } | msmtp "${REPORT_EMAIL}" 2>/dev/null && log_ok "Report emailed" || log_warn "Email send failed"
+    fi
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Main
+# ══════════════════════════════════════════════════════════════════════════
+
+log_info "Phantom maintenance starting — ${SERVICE_TYPE} on ${DOMAIN:-$(hostname)}"
+echo ""
+
+# ── Common checks ─────────────────────────────────────────────────────────
+run_os_updates
+run_docker_prune
+run_certbot_renew
+check_disk_usage
+check_memory
+check_fail2ban
+echo ""
+
+# ── Service updates + health ──────────────────────────────────────────────
+if [ "${SERVICE_TYPE}" = "all_in_one" ]; then
+    # Loop through comma-separated services list
+    IFS=',' read -ra SVC_LIST <<< "${SERVICES}"
+    for svc in "${SVC_LIST[@]}"; do
+        svc=$(echo "${svc}" | xargs)  # trim whitespace
+        [ -z "${svc}" ] && continue
+        update_service "${svc}"
+        health_check "${svc}"
+        echo ""
+    done
+else
+    update_service "${SERVICE_TYPE}"
+    health_check "${SERVICE_TYPE}"
+fi
+
+echo ""
+log_info "Maintenance complete — exit code: ${EXIT_CODE}"
+
+# ── Report ────────────────────────────────────────────────────────────────
+send_report
+
+exit "${EXIT_CODE}"

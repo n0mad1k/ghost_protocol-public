@@ -1,0 +1,81 @@
+---
+- name: Wait for Forgejo API
+  uri:
+    url: http://127.0.0.1:3000/
+    status_code: [200, 302]
+    follow_redirects: none
+    timeout: 10
+  register: _forgejo_check
+  retries: 6
+  delay: 5
+  until: _forgejo_check.status in [200, 302]
+
+- name: Create Forgejo admin user
+  command:
+    argv:
+      - docker
+      - exec
+      - -u
+      - git
+      - forgejo
+      - forgejo
+      - admin
+      - user
+      - create
+      - --username
+      - "{{ git_admin_user }}"
+      - --password
+      - "{{ git_admin_password }}"
+      - --email
+      - "{{ git_admin_email }}"
+      - --admin
+      - --must-change-password=false
+  register: forgejo_admin_create
+  failed_when:
+    - forgejo_admin_create.rc != 0
+    - "'already exists' not in (forgejo_admin_create.stderr | default(''))"
+    - "'name is reserved' not in (forgejo_admin_create.stderr | default(''))"
+  changed_when: forgejo_admin_create.rc == 0
+  no_log: true
+
+- name: Warn if admin username is reserved
+  debug:
+    msg: >
+      WARNING: Username '{{ git_admin_user }}' is reserved in Forgejo v14.
+      Try a different username (e.g. 'sysadmin', 'gitadmin').
+  when:
+    - forgejo_admin_create.rc != 0
+    - "'name is reserved' in (forgejo_admin_create.stderr | default(''))"
+
+- name: Fail if admin username is reserved
+  fail:
+    msg: "Username '{{ git_admin_user }}' is reserved by Forgejo. Use a different git_admin_user (e.g. 'sysadmin')."
+  when:
+    - forgejo_admin_create.rc != 0
+    - "'name is reserved' in (forgejo_admin_create.stderr | default(''))"
+
+- name: Save admin password
+  copy:
+    content: "{{ git_admin_password }}"
+    dest: /opt/forgejo/.admin_password
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Display Forgejo setup info
+  debug:
+    msg: |
+      Forgejo deployed successfully.
+
+      Web UI: https://{{ git_domain }}
+      Username: {{ git_admin_user }}
+      Password: check /opt/forgejo/.admin_password
+      Git SSH: ssh://git@{{ git_domain }}:{{ git_ssh_port }}
+
+      Security notes:
+        - Registration disabled, admin invite only
+        - CI/CD (Actions) disabled
+        - Webhooks restricted to external hosts
+        - Git hooks disabled for all users
+        - API swagger docs disabled

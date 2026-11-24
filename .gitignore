@@ -20,3 +20,7 @@ private/
 inventory*
 .vault_pass*
 hosts
+twillio-2fa-key.txt
+deploy_info*.txt
+deploy_info*.json
+SECURITY_REVIEW*.md

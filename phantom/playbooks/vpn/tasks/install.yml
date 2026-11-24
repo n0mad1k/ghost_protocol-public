@@ -1,6 +1,9 @@
 ---
 # WireGuard installation and server key generation
 
+- name: Wait for apt locks
+  include_tasks: ../../common/tasks/wait_for_apt.yml
+
 - name: Install WireGuard
   apt:
     name:

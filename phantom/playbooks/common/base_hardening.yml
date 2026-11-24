@@ -11,11 +11,44 @@
     ssh_allow_password: false
 
   tasks:
+    # ─── Time Synchronization ─────────────────────────────────────────
+    - name: Enable NTP via timedatectl (pre-installed, no apt needed)
+      command: timedatectl set-ntp true
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for NTP synchronization
+      command: timedatectl show --property=NTPSynchronized --value
+      register: _ntp_sync
+      until: _ntp_sync.stdout == 'yes'
+      retries: 6
+      delay: 5
+      failed_when: false
+      changed_when: false
+
+    # ─── Prevent apt-daily race conditions ─────────────────────────────
+    - name: Stop apt-daily timers to prevent race conditions
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - apt-daily.timer
+        - apt-daily-upgrade.timer
+      failed_when: false
+
+    - name: Kill any running apt-daily processes
+      command: systemd-run --wait -- systemctl stop {{ item }}
+      loop:
+        - apt-daily.service
+        - apt-daily-upgrade.service
+      failed_when: false
+      changed_when: false
+
     # ─── System Updates ─────────────────────────────────────────────────
     - name: Update apt cache
-      apt:
-        update_cache: true
-        cache_valid_time: 3600
+      command: apt-get update
+      changed_when: false
       when: ansible_os_family == "Debian"
 
     - name: Upgrade all packages
@@ -32,7 +65,29 @@
           - wget
           - gnupg
           - ca-certificates
+          - chrony
         state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Enable chrony for ongoing time sync
+      service:
+        name: chrony
+        state: started
+        enabled: true
+      when: ansible_os_family == "Debian"
+
+    - name: Force NTP sync via chrony
+      command: chronyc makestep 1 1
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == "Debian"
+
+    - name: Disable systemd-timesyncd to avoid NTP client conflict
+      service:
+        name: systemd-timesyncd
+        state: stopped
+        enabled: false
+      failed_when: false
       when: ansible_os_family == "Debian"
 
     - name: Install optional hardening packages
@@ -171,17 +226,6 @@
         regexp: "^#?LoginGraceTime"
         line: "LoginGraceTime 60"
       notify: restart sshd
-
-    # ─── Automatic Security Updates ─────────────────────────────────────
-    - name: Enable unattended upgrades for security
-      copy:
-        dest: /etc/apt/apt.conf.d/20auto-upgrades
-        content: |
-          APT::Periodic::Update-Package-Lists "1";
-          APT::Periodic::Unattended-Upgrade "1";
-          APT::Periodic::AutocleanInterval "7";
-        mode: "0644"
-      when: ansible_os_family == "Debian"
 
     # ─── Kernel Hardening ───────────────────────────────────────────────
     - name: Apply sysctl hardening

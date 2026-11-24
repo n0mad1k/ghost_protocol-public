@@ -1,5 +1,5 @@
 ---
-# Vaultwarden (Bitwarden-compatible) deployment: official container image + systemd
+# Vaultwarden (Bitwarden-compatible) deployment — Docker + nginx
 
 - name: Deploy Vaultwarden Password Manager
   hosts: all
@@ -14,6 +14,10 @@
     - name: Include Vaultwarden installation
       include_tasks: tasks/install.yml
 
+    - name: Configure Cloudflare Tunnel
+      include_tasks: ../common/tasks/cloudflare_tunnel.yml
+      when: cf_tunnel_token is defined and cf_tunnel_token != ""
+
     - name: Include Vaultwarden configuration
       include_tasks: tasks/configure.yml
 
@@ -25,8 +29,3 @@
       service:
         name: nginx
         state: reloaded
-
-    - name: restart vaultwarden
-      service:
-        name: vaultwarden
-        state: restarted

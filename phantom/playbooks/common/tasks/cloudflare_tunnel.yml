@@ -1,0 +1,33 @@
+---
+# Deploy and run the Cloudflare tunnel setup script
+# Requires: cf_tunnel_token, _tls_domain (or domain as fallback)
+
+- name: Set tunnel domain
+  set_fact:
+    _tls_domain: "{{ _tls_domain | default(email_hostname | default(domain)) }}"
+
+- name: Deploy tunnel setup script
+  template:
+    src: ../templates/setup-tunnel.sh.j2
+    dest: /usr/local/bin/setup-tunnel
+    mode: "0700"
+
+- name: Run Cloudflare tunnel setup
+  command: /usr/local/bin/setup-tunnel {{ cf_tunnel_token }}
+  no_log: true
+  register: tunnel_result
+  ignore_errors: true
+  timeout: 120
+
+- name: Display tunnel setup result
+  debug:
+    msg: "{{ tunnel_result.stdout_lines | default([]) }}"
+  when: tunnel_result is defined and tunnel_result.rc == 0
+
+- name: Warn if tunnel setup failed
+  debug:
+    msg: |
+      Cloudflare tunnel setup failed.
+      {{ tunnel_result.stderr | default('') }}
+      Run manually: /usr/local/bin/setup-tunnel <CF_API_TOKEN>
+  when: tunnel_result is defined and tunnel_result.rc != 0

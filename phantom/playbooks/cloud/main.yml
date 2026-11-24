@@ -14,6 +14,10 @@
     - name: Include Nextcloud installation
       include_tasks: tasks/install.yml
 
+    - name: Configure Cloudflare Tunnel
+      include_tasks: ../common/tasks/cloudflare_tunnel.yml
+      when: cf_tunnel_token is defined and cf_tunnel_token != ""
+
     - name: Include Nextcloud configuration
       include_tasks: tasks/configure.yml
 

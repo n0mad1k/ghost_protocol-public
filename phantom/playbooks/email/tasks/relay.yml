@@ -1,0 +1,130 @@
+---
+# WireGuard mail relay — runs on VPS to forward mail ports to local Mailcow
+
+- name: Wait for apt lock
+  include_tasks: ../../common/tasks/wait_for_apt.yml
+
+- name: Update apt cache
+  command: apt-get update
+  changed_when: false
+  when: ansible_os_family == "Debian"
+
+- name: Install WireGuard on relay VPS
+  apt:
+    name:
+      - wireguard
+      - wireguard-tools
+    state: present
+  when: ansible_os_family == "Debian"
+
+- name: Enable IPv4 forwarding
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_set: true
+    reload: true
+
+- name: Disable IPv6 forwarding
+  sysctl:
+    name: net.ipv6.conf.all.forwarding
+    value: "0"
+    sysctl_set: true
+    reload: true
+
+- name: Set WireGuard directory permissions
+  file:
+    path: /etc/wireguard
+    state: directory
+    mode: "0700"
+
+- name: Generate relay WireGuard keys
+  shell: |
+    wg genkey | tee /etc/wireguard/relay_private.key | wg pubkey > /etc/wireguard/relay_public.key
+    chmod 600 /etc/wireguard/relay_private.key
+  args:
+    creates: /etc/wireguard/relay_private.key
+  no_log: true
+
+- name: Generate preshared key
+  shell: wg genpsk > /etc/wireguard/relay_psk.key && chmod 600 /etc/wireguard/relay_psk.key
+  args:
+    creates: /etc/wireguard/relay_psk.key
+  no_log: true
+
+- name: Read relay private key
+  slurp:
+    src: /etc/wireguard/relay_private.key
+  register: relay_privkey
+  no_log: true
+
+- name: Read relay public key
+  slurp:
+    src: /etc/wireguard/relay_public.key
+  register: relay_pubkey
+  no_log: true
+
+- name: Read preshared key
+  slurp:
+    src: /etc/wireguard/relay_psk.key
+  register: relay_psk
+  no_log: true
+
+- name: Detect primary network interface
+  shell: ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}'
+  register: relay_interface
+  changed_when: false
+
+- name: Deploy relay WireGuard config
+  copy:
+    dest: /etc/wireguard/wg-mail.conf
+    content: |
+      [Interface]
+      Address = 10.99.0.1/24
+      ListenPort = 51820
+      PrivateKey = {{ (relay_privkey.content | b64decode).strip() }}
+
+      # Port forwarding: VPS public IP → Mailcow via tunnel (TLS-only ports)
+      PostUp = iptables -t nat -A PREROUTING -i {{ relay_interface.stdout | trim }} -p tcp -m multiport --dports 25,465,587,993,995,4190 -j DNAT --to-destination 10.99.0.2
+      PostUp = iptables -I FORWARD -i {{ relay_interface.stdout | trim }} -o wg-mail -p tcp --dport 25 -m hashlimit --hashlimit 10/minute --hashlimit-burst 20 --hashlimit-name smtp_relay --hashlimit-mode srcip -j ACCEPT
+      PostUp = iptables -I FORWARD -i {{ relay_interface.stdout | trim }} -o wg-mail -p tcp -m multiport --dports 25,465,587,993,995,4190 -j ACCEPT
+      PostUp = iptables -A FORWARD -i wg-mail -o {{ relay_interface.stdout | trim }} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+      PostUp = iptables -A FORWARD -i {{ relay_interface.stdout | trim }} -o wg-mail -j DROP
+      PostDown = iptables -t nat -D PREROUTING -i {{ relay_interface.stdout | trim }} -p tcp -m multiport --dports 25,465,587,993,995,4190 -j DNAT --to-destination 10.99.0.2
+      PostDown = iptables -D FORWARD -i {{ relay_interface.stdout | trim }} -o wg-mail -p tcp --dport 25 -m hashlimit --hashlimit 10/minute --hashlimit-burst 20 --hashlimit-name smtp_relay --hashlimit-mode srcip -j ACCEPT
+      PostDown = iptables -D FORWARD -i {{ relay_interface.stdout | trim }} -o wg-mail -p tcp -m multiport --dports 25,465,587,993,995,4190 -j ACCEPT
+      PostDown = iptables -D FORWARD -i wg-mail -o {{ relay_interface.stdout | trim }} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+      PostDown = iptables -D FORWARD -i {{ relay_interface.stdout | trim }} -o wg-mail -j DROP
+    mode: "0600"
+  no_log: true
+
+- name: Set UFW default forward policy to ACCEPT
+  lineinfile:
+    path: /etc/default/ufw
+    regexp: '^DEFAULT_FORWARD_POLICY='
+    line: 'DEFAULT_FORWARD_POLICY="ACCEPT"'
+
+- name: Allow mail ports through UFW on relay
+  ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+  loop:
+    - { port: "25", proto: "tcp" }
+    - { port: "465", proto: "tcp" }
+    - { port: "587", proto: "tcp" }
+    - { port: "993", proto: "tcp" }
+    - { port: "995", proto: "tcp" }
+    - { port: "4190", proto: "tcp" }
+    - { port: "51820", proto: "udp" }
+
+- name: Save relay connection info
+  copy:
+    dest: /etc/wireguard/relay_info.txt
+    content: |
+      Relay Public Key: {{ (relay_pubkey.content | b64decode).strip() }}
+      Preshared Key: {{ (relay_psk.content | b64decode).strip() }}
+      Relay Endpoint: {{ ansible_default_ipv4.address }}:51820
+      Tunnel IP: 10.99.0.1
+      Mailcow Tunnel IP: 10.99.0.2
+    mode: "0600"
+  no_log: true

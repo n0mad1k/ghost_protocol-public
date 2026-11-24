@@ -1,0 +1,65 @@
+---
+# WireGuard client on Mailcow host — connects to VPS relay
+
+- name: Wait for apt lock
+  include_tasks: ../../common/tasks/wait_for_apt.yml
+
+- name: Update apt cache
+  command: apt-get update
+  changed_when: false
+  when: ansible_os_family == "Debian"
+
+- name: Install WireGuard on Mailcow host
+  apt:
+    name:
+      - wireguard
+      - wireguard-tools
+    state: present
+  when: ansible_os_family == "Debian"
+
+- name: Generate Mailcow host WireGuard keys
+  shell: |
+    wg genkey | tee /etc/wireguard/mailcow_private.key | wg pubkey > /etc/wireguard/mailcow_public.key
+    chmod 600 /etc/wireguard/mailcow_private.key
+  args:
+    creates: /etc/wireguard/mailcow_private.key
+  no_log: true
+
+- name: Read Mailcow private key
+  slurp:
+    src: /etc/wireguard/mailcow_private.key
+  register: mailcow_wg_privkey
+  no_log: true
+
+- name: Read Mailcow public key
+  slurp:
+    src: /etc/wireguard/mailcow_public.key
+  register: mailcow_wg_pubkey
+  no_log: true
+
+- name: Deploy Mailcow WireGuard client config
+  copy:
+    dest: /etc/wireguard/wg-mail.conf
+    content: |
+      [Interface]
+      Address = 10.99.0.2/24
+      PrivateKey = {{ (mailcow_wg_privkey.content | b64decode).strip() }}
+      PostUp = iptables -A INPUT -i wg-mail -p tcp -m multiport --dports 25,465,587,993,995,4190 -s 10.99.0.1 -j ACCEPT
+      PostUp = iptables -A INPUT -i wg-mail -j DROP
+      PostDown = iptables -D INPUT -i wg-mail -p tcp -m multiport --dports 25,465,587,993,995,4190 -s 10.99.0.1 -j ACCEPT
+      PostDown = iptables -D INPUT -i wg-mail -j DROP
+
+      [Peer]
+      PublicKey = {{ relay_pubkey }}
+      PresharedKey = {{ relay_psk }}
+      Endpoint = {{ relay_endpoint }}
+      AllowedIPs = 10.99.0.1/32
+      PersistentKeepalive = 15
+    mode: "0600"
+  no_log: true
+
+- name: Enable and start WireGuard tunnel
+  systemd:
+    name: wg-quick@wg-mail
+    state: started
+    enabled: true

@@ -1,0 +1,61 @@
+; Forgejo configuration
+; Secrets are in this file (0600), NOT in environment variables
+
+[database]
+DB_TYPE = sqlite3
+
+[server]
+ROOT_URL = https://{{ git_domain }}/
+SSH_DOMAIN = {{ git_domain }}
+SSH_PORT = {{ git_ssh_port }}
+SSH_LISTEN_PORT = 22
+DOMAIN = {{ git_domain }}
+LFS_START_SERVER = true
+LFS_MAX_FILE_SIZE = 52428800
+
+[security]
+SECRET_KEY = {{ forgejo_secret_key }}
+INTERNAL_TOKEN = {{ forgejo_internal_token }}
+INSTALL_LOCK = true
+
+[service]
+DISABLE_REGISTRATION = true
+REQUIRE_SIGNIN_VIEW = true
+DEFAULT_KEEP_EMAIL_PRIVATE = true
+DEFAULT_ALLOW_CREATE_ORGANIZATION = false
+
+[api]
+ENABLE_SWAGGER = false
+
+[other]
+SHOW_FOOTER_VERSION = false
+SHOW_FOOTER_TEMPLATE_LOAD_TIME = false
+
+[federation]
+ENABLED = false
+
+[openid]
+ENABLE_OPENID_SIGNIN = false
+ENABLE_OPENID_SIGNUP = false
+
+[repository]
+DEFAULT_PRIVATE = private
+DISABLE_STARS = true
+DISABLE_GIT_HOOKS = true
+MAX_CREATION_LIMIT = 50
+
+[webhook]
+ALLOWED_HOST_LIST = external
+SKIP_TLS_VERIFY = false
+
+[actions]
+ENABLED = false
+
+[log]
+MODE = console,file
+LEVEL = warn
+LOGGER_ACCESS_MODE =
+LOGGER_SSH_MODE = file
+
+[mailer]
+ENABLED = false

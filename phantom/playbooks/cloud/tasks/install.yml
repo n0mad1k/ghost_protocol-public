@@ -1,6 +1,14 @@
 ---
 # Nextcloud package and dependency installation
 
+- name: Wait for apt locks
+  include_tasks: ../../common/tasks/wait_for_apt.yml
+
+- name: Update apt cache
+  command: apt-get update
+  changed_when: false
+  when: ansible_os_family == "Debian"
+
 - name: Install Nextcloud dependencies
   apt:
     name:
@@ -18,6 +26,7 @@
       - php-bcmath
       - php-gmp
       - mariadb-server
+      - python3-pymysql
       - redis-server
       - nginx
       - certbot
@@ -28,7 +37,6 @@
       - curl
       - ca-certificates
     state: present
-    update_cache: true
   when: ansible_os_family == "Debian"
 
 - name: Detect installed PHP version
@@ -51,6 +59,11 @@
     name: redis-server
     state: started
     enabled: true
+
+- name: Enable APCu for PHP CLI
+  shell: phpenmod apcu
+  changed_when: true
+  ignore_errors: true
 
 - name: Enable and start PHP-FPM
   service:

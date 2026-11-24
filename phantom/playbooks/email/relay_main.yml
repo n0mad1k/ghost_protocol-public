@@ -1,0 +1,9 @@
+---
+- name: Configure WireGuard Mail Relay on VPS
+  hosts: all
+  become: true
+  vars:
+    mailcow_hostname: "{{ email_hostname | default('') }}"
+  tasks:
+    - name: Include relay setup tasks
+      include_tasks: tasks/relay.yml

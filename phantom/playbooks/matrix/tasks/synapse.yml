@@ -2,6 +2,9 @@
 # Synapse homeserver installation and configuration
 # Uses SQLite3 (matches c2itall chat-server pattern — no PostgreSQL needed)
 
+- name: Wait for apt locks
+  include_tasks: ../../common/tasks/wait_for_apt.yml
+
 - name: Install dependencies
   apt:
     name:
@@ -26,8 +29,8 @@
     creates: /etc/apt/sources.list.d/matrix-org.list
 
 - name: Update apt cache after adding Matrix repo
-  apt:
-    update_cache: true
+  command: apt-get update
+  changed_when: false
 
 - name: Install Synapse
   apt:
